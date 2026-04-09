@@ -11,12 +11,17 @@ ALLOWED_KEYWORDS = {
 }
 
 FORBIDDEN_PATTERN = re.compile(
-    r"\b(ПОМЕСТИТЬ|УНИЧТОЖИТЬ|УДАЛИТЬ|ИЗМЕНИТЬ|СОЗДАТЬ|ОБНОВИТЬ)\b",
+    r"\b(ПОМЕСТИТЬ|УНИЧТОЖИТЬ|УДАЛИТЬ|ИЗМЕНИТЬ|СОЗДАТЬ|ОБНОВИТЬ|ПЕРЕСЕКЕМ)\b",
     re.IGNORECASE,
 )
 
 REGISTER_PATTERN = re.compile(
     r"РегистрНакопления\.(\w+?)(?:\.|$)",
+)
+
+# Catch hallucinated references to catalogs, documents, etc.
+OBJECT_PATTERN = re.compile(
+    r"(Справочник|Документ|ПланСчетов|ПланВидовХарактеристик)\.\w+",
 )
 
 
@@ -44,6 +49,11 @@ def validate_query(
         full_name = f"РегистрНакопления.{reg_name}"
         if full_name not in allowed_registers:
             return False, f"Регистр не из разрешенного списка: {full_name}", ""
+
+    # Block hallucinated object references (catalogs, documents, etc.)
+    found_objects = OBJECT_PATTERN.findall(stripped)
+    if found_objects:
+        return False, f"Запрещены ссылки на объекты: {', '.join(found_objects)}", ""
 
     # Enforce row limit
     sanitized = stripped

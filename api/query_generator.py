@@ -27,10 +27,10 @@ def _format_metadata(register_metadata: dict) -> str:
 def _parse_llm_response(response: str, question: str) -> dict:
     """Extract query and params from LLM text response."""
     query = response.strip()
-    # Remove markdown code fences if present
-    if query.startswith("```"):
+    # Remove markdown code fences: ```sql ... ``` or ``` ... ```
+    if "```" in query:
         lines = query.split("\n")
-        lines = [l for l in lines if not l.startswith("```")]
+        lines = [l for l in lines if not l.strip().startswith("```")]
         query = "\n".join(lines).strip()
 
     params = parse_period(question) or {}
