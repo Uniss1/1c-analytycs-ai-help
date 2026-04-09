@@ -4,8 +4,11 @@ Stores mapping: dashboard -> registers -> dimensions/resources.
 Populated by scripts/sync_metadata.py from 1C Analytics.
 """
 
+import logging
 import sqlite3
 import re
+
+logger = logging.getLogger(__name__)
 
 _conn: sqlite3.Connection | None = None
 
@@ -66,12 +69,38 @@ def _enrich_register(row: sqlite3.Row) -> dict:
     }
 
 
-def find_register(question: str, dashboard_context: dict | None = None) -> dict | None:
-    """Find relevant register by question keywords + dashboard context."""
+def find_register(question: str, dashboard_context: dict | None = None) -> tuple[dict | None, dict]:
+    """Find relevant register by question keywords + dashboard context.
+
+    Returns (register_metadata | None, debug_info).
+    """
     conn = _get_conn()
     words = _extract_keywords(question)
+
+    # Collect all available keywords in DB
+    all_kw = conn.execute("SELECT k.keyword, r.name FROM keywords k JOIN registers r ON r.id=k.register_id").fetchall()
+    kw_to_register = {}
+    for row in all_kw:
+        kw_to_register.setdefault(row[0], []).append(row[1])
+
+    matching = {w: kw_to_register[w] for w in words if w in kw_to_register}
+
+    debug_info = {
+        "question": question,
+        "extracted_words": words,
+        "available_keywords": dict(kw_to_register),
+        "matching_keywords": matching,
+        "dashboard_slug": dashboard_context.get("slug") if dashboard_context else None,
+    }
+
+    logger.info("METADATA lookup: question=%r", question)
+    logger.info("METADATA extracted words: %s", words)
+    logger.info("METADATA matching: %s", matching)
+
     if not words:
-        return None
+        logger.warning("METADATA: no keywords extracted from question")
+        debug_info["result"] = "no_keywords"
+        return None, debug_info
 
     placeholders = ",".join("?" for _ in words)
 
@@ -102,8 +131,16 @@ def find_register(question: str, dashboard_context: dict | None = None) -> dict 
         row = conn.execute(query, words).fetchone()
 
     if row is None:
-        return None
-    return _enrich_register(row)
+        logger.warning("METADATA: no register found for words=%s", words)
+        debug_info["result"] = "not_found"
+        return None, debug_info
+    result = _enrich_register(row)
+    logger.info("METADATA found: %s (dims=%s, resources=%s)",
+                result["name"],
+                [d["name"] for d in result.get("dimensions", [])],
+                [r["name"] for r in result.get("resources", [])])
+    debug_info["result"] = result["name"]
+    return result, debug_info
 
 
 def get_all_registers() -> list[dict]:

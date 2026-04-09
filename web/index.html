@@ -899,12 +899,26 @@
             break;
 
           case 'metadata':
+            if (step.extracted_words) {
+              body.innerHTML = `<span class="debug-key">Слова из вопроса:</span> <span class="debug-val">${esc(step.extracted_words.join(', '))}</span><br>`;
+            }
+            if (step.matching_keywords) {
+              const matches = Object.entries(step.matching_keywords).map(([k,v]) => `${k} → ${v}`).join(', ');
+              body.innerHTML += `<span class="debug-key">Совпадения с keywords:</span> <span class="debug-val">${esc(matches || 'нет')}</span><br>`;
+            }
+            if (step.available_keywords && !step.found) {
+              body.innerHTML += `<span class="debug-key">Все keywords в БД:</span>`;
+              const kw = document.createElement('code');
+              kw.className = 'debug-json';
+              kw.textContent = JSON.stringify(step.available_keywords, null, 2);
+              body.appendChild(kw);
+            }
             if (step.found) {
-              body.innerHTML = `<span class="debug-key">register:</span> <span class="debug-val">${esc(step.register)}</span><br>` +
+              body.innerHTML += `<span class="debug-key">register:</span> <span class="debug-val">${esc(step.register)}</span><br>` +
                 `<span class="debug-key">dimensions:</span> <span class="debug-val">${esc((step.dimensions||[]).join(', '))}</span><br>` +
                 `<span class="debug-key">resources:</span> <span class="debug-val">${esc((step.resources||[]).join(', '))}</span>`;
             } else {
-              body.innerHTML = `<span class="debug-val error">Регистр не найден</span>`;
+              body.innerHTML += `<span class="debug-val error">Регистр не найден</span>`;
             }
             break;
 

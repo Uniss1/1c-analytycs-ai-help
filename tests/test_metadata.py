@@ -60,23 +60,25 @@ def db_path():
 
 
 def test_find_register_by_keyword(db_path):
-    result = find_register("какая выручка за март?")
+    result, debug = find_register("какая выручка за март?")
     assert result is not None
     assert result["name"] == "РегистрНакопления.ВитринаВыручка"
     assert "dimensions" in result
     assert "resources" in result
     assert result["register_type"] == "accumulation_turnover"
+    assert "выручка" in debug["matching_keywords"]
 
 
 def test_find_register_with_dashboard_context(db_path):
-    result = find_register("численность персонала", dashboard_context={"slug": "costs"})
+    result, debug = find_register("численность персонала", dashboard_context={"slug": "costs"})
     assert result is not None
     assert result["name"] == "РегистрНакопления.ВитринаПерсонал"
 
 
 def test_find_register_not_found(db_path):
-    result = find_register("какая погода завтра?")
+    result, debug = find_register("какая погода завтра?")
     assert result is None
+    assert debug["extracted_words"]  # words were extracted but no match
 
 
 def test_get_dashboard_registers(db_path):

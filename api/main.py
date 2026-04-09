@@ -28,6 +28,12 @@ from .query_validator import validate_query
 from .router import classify_intent
 from .wiki_client import ask_knowledge_base
 
+# Configure logging for all api modules
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
 logger = logging.getLogger(__name__)
 
 DB_DIR = Path(__file__).parent.parent
@@ -186,9 +192,17 @@ async def _handle_data(
     """Data flow: metadata → extract params → clarify or execute."""
     # Find register
     t0 = time.monotonic()
-    register_meta = find_register(message, dashboard_context)
+    register_meta, meta_debug = find_register(message, dashboard_context)
+    ms = int((time.monotonic() - t0) * 1000)
     if not register_meta:
-        debug["steps"].append({"step": "metadata", "found": False, "ms": int((time.monotonic() - t0) * 1000)})
+        debug["steps"].append({
+            "step": "metadata",
+            "found": False,
+            "extracted_words": meta_debug.get("extracted_words"),
+            "available_keywords": meta_debug.get("available_keywords"),
+            "matching_keywords": meta_debug.get("matching_keywords"),
+            "ms": ms,
+        })
         return {"answer": "Не удалось определить подходящий регистр для вашего вопроса."}
 
     register_name = register_meta["name"]
@@ -196,9 +210,11 @@ async def _handle_data(
         "step": "metadata",
         "found": True,
         "register": register_name,
+        "extracted_words": meta_debug.get("extracted_words"),
+        "matching_keywords": meta_debug.get("matching_keywords"),
         "dimensions": [d["name"] for d in register_meta.get("dimensions", [])],
         "resources": [r["name"] for r in register_meta.get("resources", [])],
-        "ms": int((time.monotonic() - t0) * 1000),
+        "ms": ms,
     })
 
     # Extract structured params via LLM
