@@ -43,17 +43,27 @@ curl http://localhost:8000/health
 # Все тесты
 python3 -m pytest tests/ -v
 
-# Ожидаемый результат (10 тестов):
-# tests/test_metadata.py::test_find_register_by_keyword        PASSED
-# tests/test_metadata.py::test_find_register_with_dashboard_context PASSED
-# tests/test_metadata.py::test_find_register_not_found          PASSED
-# tests/test_metadata.py::test_get_dashboard_registers          PASSED
-# tests/test_metadata.py::test_get_all_registers                PASSED
-# tests/test_validator.py::test_valid_select                    PASSED
-# tests/test_validator.py::test_reject_delete                   PASSED
-# tests/test_validator.py::test_reject_unknown_register         PASSED
-# tests/test_validator.py::test_add_limit                       PASSED
-# tests/test_validator.py::test_keep_existing_limit             PASSED
+# Ожидаемый результат (20 тестов):
+# tests/test_metadata.py::test_find_register_by_keyword              PASSED
+# tests/test_metadata.py::test_find_register_with_dashboard_context  PASSED
+# tests/test_metadata.py::test_find_register_not_found               PASSED
+# tests/test_metadata.py::test_get_dashboard_registers               PASSED
+# tests/test_metadata.py::test_get_all_registers                     PASSED
+# tests/test_query_generator_integration.py::test_template_path      PASSED
+# tests/test_query_generator_integration.py::test_llm_path           PASSED
+# tests/test_query_generator_integration.py::test_llm_invalid_query_raises PASSED
+# tests/test_templates.py::test_sum_for_period                       PASSED
+# tests/test_templates.py::test_sum_by_dimension                     PASSED
+# tests/test_templates.py::test_top_n                                PASSED
+# tests/test_templates.py::test_no_match                             PASSED
+# tests/test_templates.py::test_date_parser_month                    PASSED
+# tests/test_templates.py::test_date_parser_quarter                  PASSED
+# tests/test_templates.py::test_date_parser_year                     PASSED
+# tests/test_validator.py::test_valid_select                         PASSED
+# tests/test_validator.py::test_reject_delete                        PASSED
+# tests/test_validator.py::test_reject_unknown_register              PASSED
+# tests/test_validator.py::test_add_limit                            PASSED
+# tests/test_validator.py::test_keep_existing_limit                  PASSED
 ```
 
 ### Ручная проверка metadata
@@ -88,6 +98,29 @@ print(result["name"])        # → РегистрНакопления.Витри
 # Несуществующий запрос
 result = find_register("погода завтра")
 print(result)                # → None
+```
+
+```python
+from api.date_parser import parse_period
+
+# Парсинг периодов из текста
+parse_period("за март")              # → {"Начало": "2025-03-01", "Конец": "2025-03-31"}
+parse_period("за 1 квартал 2025")    # → {"Начало": "2025-01-01", "Конец": "2025-03-31"}
+parse_period("за 2024 год")          # → {"Начало": "2024-01-01", "Конец": "2024-12-31"}
+parse_period("за последний месяц")   # → предыдущий календарный месяц
+parse_period("за январь-март 2025")  # → {"Начало": "2025-01-01", "Конец": "2025-03-31"}
+```
+
+```python
+from api.query_templates import try_match
+
+meta = find_register("выручка за март")
+result = try_match("выручка за март", meta)
+print(result["query"])   # → ВЫБРАТЬ ПЕРВЫЕ 1000 СУММА(Сумма) КАК Значение ИЗ ...
+print(result["params"])  # → {"Начало": "2025-03-01", "Конец": "2025-03-31"}
+
+# Нет подходящего шаблона — вернёт None, уйдёт в LLM
+try_match("сравни Q1 и Q2", meta)  # → None
 ```
 
 ```python
@@ -168,8 +201,9 @@ api/                  # FastAPI backend
 ├── config.py         # Pydantic Settings (.env)
 ├── metadata.py       # Поиск регистра по ключевым словам ✅
 ├── query_validator.py # Валидация запросов 1С ✅
-├── query_templates.py # Шаблоны частых запросов
-├── query_generator.py # Генерация запросов через LLM (stub)
+├── query_templates.py # Шаблоны частых запросов + try_match() ✅
+├── query_generator.py # Генерация запросов: шаблоны → LLM fallback ✅
+├── date_parser.py    # Парсинг периодов из русского текста ✅
 ├── router.py         # Классификация intent (stub)
 ├── formatter.py      # Форматирование ответа через LLM (stub)
 ├── llm_client.py     # Клиент Ollama (multi-GPU)
@@ -192,7 +226,8 @@ docs/                 # Спецификации и планы
 | Фаза | Описание | Статус |
 |------|----------|--------|
 | 0 | Инфраструктура (Ollama, FastAPI, SQLite) | Done |
-| 1 | Data flow (metadata, templates, validation, formatting) | In progress |
+| 1 | Data flow: metadata, validation | Done |
+| 1.5 | Data flow: query generation (templates + LLM) | Done |
 | 2 | Knowledge flow (ai-chat интеграция) | Pending |
 | 3 | Router + Chat API | Pending |
 | 4 | Расширение 1С + подключение | Pending |
