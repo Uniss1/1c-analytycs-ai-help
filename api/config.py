@@ -18,7 +18,7 @@ class Settings(BaseSettings):
 
     # ai-chat (knowledge base)
     wiki_base_url: str = "http://localhost:3001"
-    wiki_timeout: int = 30
+    wiki_timeout: int = 120
 
     # Limits
     query_timeout: int = 30
