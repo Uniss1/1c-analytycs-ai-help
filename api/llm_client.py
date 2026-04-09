@@ -26,6 +26,7 @@ async def generate(role: str, system_prompt: str, user_message: str) -> str:
         "prompt": user_message,
         "stream": False,
         "think": False,
+        "options": {"temperature": 0.1},
     }
 
     async with httpx.AsyncClient(timeout=120) as client:
