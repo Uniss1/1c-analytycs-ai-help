@@ -80,71 +80,95 @@ sqlite3 metadata.db "SELECT d.title, r.name FROM dashboards d JOIN dashboard_reg
 # → 4 строки: связи дашбордов с регистрами
 ```
 
-### Ручная проверка в Python
+### Ручная проверка date_parser
 
-```python
-from api.metadata import init_metadata, find_register
-init_metadata("metadata.db")
-
-# Поиск регистра по ключевому слову
-result = find_register("какая выручка за март?")
-print(result["name"])        # → РегистрНакопления.ВитринаВыручка
-print(result["dimensions"])  # → [{name: Период, ...}, {name: Подразделение, ...}, ...]
-
-# С контекстом дашборда
-result = find_register("численность", dashboard_context={"slug": "costs"})
-print(result["name"])        # → РегистрНакопления.ВитринаПерсонал
-
-# Несуществующий запрос
-result = find_register("погода завтра")
-print(result)                # → None
-```
-
-```python
+```bash
+python3 -c "
 from api.date_parser import parse_period
+print(parse_period('за март'))
+# → {'Начало': '2025-03-01', 'Конец': '2025-03-31'}
 
-# Парсинг периодов из текста
-parse_period("за март")              # → {"Начало": "2025-03-01", "Конец": "2025-03-31"}
-parse_period("за 1 квартал 2025")    # → {"Начало": "2025-01-01", "Конец": "2025-03-31"}
-parse_period("за 2024 год")          # → {"Начало": "2024-01-01", "Конец": "2024-12-31"}
-parse_period("за последний месяц")   # → предыдущий календарный месяц
-parse_period("за январь-март 2025")  # → {"Начало": "2025-01-01", "Конец": "2025-03-31"}
+print(parse_period('за 1 квартал 2025'))
+# → {'Начало': '2025-01-01', 'Конец': '2025-03-31'}
+
+print(parse_period('за 2024 год'))
+# → {'Начало': '2024-01-01', 'Конец': '2024-12-31'}
+
+print(parse_period('за последний месяц'))
+# → предыдущий календарный месяц
+
+print(parse_period('за январь-март 2025'))
+# → {'Начало': '2025-01-01', 'Конец': '2025-03-31'}
+"
 ```
 
-```python
+### Ручная проверка шаблонов (без LLM)
+
+```bash
+python3 -c "
+from api.metadata import init_metadata, find_register
 from api.query_templates import try_match
 
-meta = find_register("выручка за март")
-result = try_match("выручка за март", meta)
-print(result["query"])   # → ВЫБРАТЬ ПЕРВЫЕ 1000 СУММА(Сумма) КАК Значение ИЗ ...
-print(result["params"])  # → {"Начало": "2025-03-01", "Конец": "2025-03-31"}
+init_metadata('metadata.db')
+meta = find_register('какая выручка за март?')
+print('Регистр:', meta['name'])
+# → РегистрНакопления.ВитринаВыручка
 
-# Нет подходящего шаблона — вернёт None, уйдёт в LLM
-try_match("сравни Q1 и Q2", meta)  # → None
+result = try_match('выручка за март', meta)
+print('Запрос:', result['query'])
+# → ВЫБРАТЬ ПЕРВЫЕ 1000 СУММА(Сумма) КАК Значение ИЗ ...
+print('Параметры:', result['params'])
+# → {'Начало': '2025-03-01', 'Конец': '2025-03-31'}
+
+print('Нет шаблона:', try_match('сравни Q1 и Q2', meta))
+# → None (уйдёт в LLM)
+"
 ```
 
-```python
+### Ручная проверка валидатора
+
+```bash
+python3 -c "
 from api.query_validator import validate_query
 
-whitelist = {"РегистрНакопления.ВитринаВыручка"}
+whitelist = {'РегистрНакопления.ВитринаВыручка'}
 
-# Валидный запрос
 ok, err, query = validate_query(
-    "ВЫБРАТЬ Сумма ИЗ РегистрНакопления.ВитринаВыручка.Обороты(,,,)",
+    'ВЫБРАТЬ Сумма ИЗ РегистрНакопления.ВитринаВыручка.Обороты(,,,)',
     whitelist
 )
-print(ok, query)  # → True  ВЫБРАТЬ ПЕРВЫЕ 1000 Сумма ИЗ ...
+print('Валидный:', ok, query)
+# → True  ВЫБРАТЬ ПЕРВЫЕ 1000 Сумма ИЗ ...
 
-# Запрещённая операция
-ok, err, query = validate_query("УДАЛИТЬ ИЗ Таблица", whitelist)
-print(ok, err)    # → False  Запрещено: УДАЛИТЬ
+ok, err, _ = validate_query('УДАЛИТЬ ИЗ Таблица', whitelist)
+print('Запрещено:', ok, err)
+# → False  Запрещено: УДАЛИТЬ
 
-# Регистр не в whitelist
-ok, err, query = validate_query(
-    "ВЫБРАТЬ * ИЗ РегистрНакопления.СекретныйРегистр.Обороты(,,,)",
+ok, err, _ = validate_query(
+    'ВЫБРАТЬ * ИЗ РегистрНакопления.СекретныйРегистр.Обороты(,,,)',
     whitelist
 )
-print(ok, err)    # → False  Регистр не из разрешенного списка: ...
+print('Не в whitelist:', ok, err)
+# → False  Регистр не из разрешенного списка: ...
+"
+```
+
+### Ручная проверка LLM-пути (требует Ollama на GPU 1, порт 11435)
+
+```bash
+python3 -c "
+import asyncio
+from api.metadata import init_metadata, find_register
+from api.query_generator import generate_query
+
+init_metadata('metadata.db')
+meta = find_register('какая выручка?')
+
+result = asyncio.run(generate_query('сравни Q1 и Q2 2025', meta))
+print('Запрос:', result['query'])
+print('Параметры:', result['params'])
+# LLM сгенерирует запрос, валидатор проверит и добавит ПЕРВЫЕ 1000
+"
 ```
 
 ## Архитектура
