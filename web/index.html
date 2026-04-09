@@ -430,6 +430,82 @@
     .badge-data { background: #e3f2fd; color: #1565c0; }
     .badge-knowledge { background: #f3e5f5; color: #7b1fa2; }
     .badge-latency { background: #f5f5f5; color: #9e9e9e; }
+    .badge-debug {
+      background: #fff3e0; color: #e65100; cursor: pointer;
+      user-select: none;
+    }
+    .badge-debug:hover { background: #ffe0b2; }
+
+    /* ── Debug Panel ── */
+    .debug-panel {
+      margin-top: 8px;
+      background: var(--bg-secondary);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.6;
+      color: #c8ccd8;
+      overflow-x: auto;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    .debug-panel::-webkit-scrollbar { width: 4px; height: 4px; }
+    .debug-panel::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
+
+    .debug-step {
+      margin-bottom: 8px;
+      padding: 6px 8px;
+      border-radius: 4px;
+      background: rgba(255,255,255,0.04);
+      border-left: 3px solid #444;
+    }
+
+    .debug-step.step-router { border-left-color: #42a5f5; }
+    .debug-step.step-metadata { border-left-color: #66bb6a; }
+    .debug-step.step-param_extractor, .debug-step.step-param_extractor_retry { border-left-color: #ffa726; }
+    .debug-step.step-query_builder { border-left-color: #ab47bc; }
+    .debug-step.step-validator { border-left-color: #78909c; }
+    .debug-step.step-1c_execute { border-left-color: #ef5350; }
+    .debug-step.step-formatter { border-left-color: #26c6da; }
+    .debug-step.step-cache { border-left-color: #8d6e63; }
+
+    .debug-step-title {
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 2px;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .debug-step-title .ms { color: #888; font-weight: 400; }
+
+    .debug-key { color: #82aaff; }
+    .debug-val { color: #c3e88d; }
+    .debug-val.error { color: #ef5350; }
+
+    .debug-query {
+      display: block;
+      margin: 4px 0;
+      padding: 6px 8px;
+      background: rgba(0,0,0,0.3);
+      border-radius: 3px;
+      white-space: pre-wrap;
+      color: #e8e8e8;
+    }
+
+    .debug-json {
+      display: block;
+      margin: 4px 0;
+      padding: 6px 8px;
+      background: rgba(0,0,0,0.3);
+      border-radius: 3px;
+      white-space: pre-wrap;
+      color: #c3e88d;
+      max-height: 150px;
+      overflow-y: auto;
+    }
 
     /* ── Input Area ── */
     .input-area {
@@ -764,7 +840,7 @@
 
         if (data.needs_clarification) {
           awaitingClarification = true;
-          appendClarification(data.answer);
+          appendClarification(data.answer, data);
         } else {
           awaitingClarification = false;
           appendMsg('assistant', data.answer, data);
@@ -776,6 +852,143 @@
         sendBtn.disabled = false;
         input.focus();
       }
+    }
+
+    // ── Debug renderer ──
+    function renderDebug(debug) {
+      const panel = document.createElement('div');
+      panel.className = 'debug-panel';
+
+      const STEP_LABELS = {
+        cache: 'Cache',
+        router: 'Router (Intent)',
+        metadata: 'Metadata (Register)',
+        param_extractor: 'Param Extractor (LLM → JSON)',
+        param_extractor_retry: 'Param Extractor (Retry)',
+        query_builder: 'Query Builder (JSON → 1C)',
+        validator: 'Validator',
+        '1c_execute': '1C Execute',
+        formatter: 'Formatter (LLM)',
+        knowledge: 'Knowledge Base',
+        clarification_response: 'Clarification',
+        user_confirmed: 'User Confirmation',
+      };
+
+      for (const step of debug.steps) {
+        const div = document.createElement('div');
+        div.className = 'debug-step step-' + step.step;
+
+        const title = document.createElement('div');
+        title.className = 'debug-step-title';
+        title.innerHTML = `<span>${esc(STEP_LABELS[step.step] || step.step)}</span>`;
+        if (step.ms !== undefined) title.innerHTML += `<span class="ms">${step.ms}ms</span>`;
+        div.appendChild(title);
+
+        const body = document.createElement('div');
+
+        switch (step.step) {
+          case 'cache':
+            body.innerHTML = `<span class="debug-key">hit:</span> <span class="debug-val">${step.hit}</span>`;
+            if (step.intent) body.innerHTML += ` <span class="debug-key">intent:</span> <span class="debug-val">${esc(step.intent)}</span>`;
+            break;
+
+          case 'router':
+            body.innerHTML = `<span class="debug-key">intent:</span> <span class="debug-val">${esc(step.intent)}</span>`;
+            break;
+
+          case 'metadata':
+            if (step.found) {
+              body.innerHTML = `<span class="debug-key">register:</span> <span class="debug-val">${esc(step.register)}</span><br>` +
+                `<span class="debug-key">dimensions:</span> <span class="debug-val">${esc((step.dimensions||[]).join(', '))}</span><br>` +
+                `<span class="debug-key">resources:</span> <span class="debug-val">${esc((step.resources||[]).join(', '))}</span>`;
+            } else {
+              body.innerHTML = `<span class="debug-val error">Регистр не найден</span>`;
+            }
+            break;
+
+          case 'param_extractor':
+          case 'param_extractor_retry':
+            body.innerHTML = `<span class="debug-key">needs_clarification:</span> <span class="debug-val">${step.needs_clarification}</span>`;
+            if (step.params) {
+              const json = document.createElement('code');
+              json.className = 'debug-json';
+              json.textContent = JSON.stringify(step.params, null, 2);
+              body.appendChild(json);
+            }
+            break;
+
+          case 'query_builder':
+            if (step.query) {
+              body.innerHTML = `<span class="debug-key">query:</span>`;
+              const q = document.createElement('code');
+              q.className = 'debug-query';
+              q.textContent = step.query;
+              body.appendChild(q);
+              body.innerHTML += `<span class="debug-key">params:</span>`;
+              const p = document.createElement('code');
+              p.className = 'debug-json';
+              p.textContent = JSON.stringify(step.params, null, 2);
+              body.appendChild(p);
+            }
+            break;
+
+          case 'validator':
+            body.innerHTML = `<span class="debug-key">valid:</span> <span class="debug-val${step.valid ? '' : ' error'}">${step.valid}</span>`;
+            if (step.error) body.innerHTML += ` <span class="debug-val error">${esc(step.error)}</span>`;
+            if (step.sanitized_query) {
+              const q = document.createElement('code');
+              q.className = 'debug-query';
+              q.textContent = step.sanitized_query;
+              body.appendChild(q);
+            }
+            break;
+
+          case '1c_execute':
+            if (step.error) {
+              body.innerHTML = `<span class="debug-val error">${esc(step.error)}</span>`;
+            } else {
+              body.innerHTML = `<span class="debug-key">rows:</span> <span class="debug-val">${step.rows}</span>` +
+                ` <span class="debug-key">total:</span> <span class="debug-val">${step.total}</span>` +
+                ` <span class="debug-key">truncated:</span> <span class="debug-val">${step.truncated}</span>`;
+              if (step.sample && step.sample.length) {
+                const s = document.createElement('code');
+                s.className = 'debug-json';
+                s.textContent = JSON.stringify(step.sample, null, 2);
+                body.appendChild(s);
+              }
+            }
+            break;
+
+          case 'formatter':
+            body.innerHTML = `<span class="debug-key">raw_data_rows:</span> <span class="debug-val">${step.raw_data_rows}</span>`;
+            break;
+
+          case 'clarification_response':
+            if (step.pending_params) {
+              const j = document.createElement('code');
+              j.className = 'debug-json';
+              j.textContent = JSON.stringify(step.pending_params, null, 2);
+              body.appendChild(j);
+            }
+            break;
+
+          case 'user_confirmed':
+            body.innerHTML = `<span class="debug-key">confirmed:</span> <span class="debug-val">${step.confirmed}</span>`;
+            if (step.correction) body.innerHTML += ` <span class="debug-key">text:</span> <span class="debug-val">${esc(step.correction)}</span>`;
+            break;
+
+          default:
+            const fallback = document.createElement('code');
+            fallback.className = 'debug-json';
+            fallback.textContent = JSON.stringify(step, null, 2);
+            body.appendChild(fallback);
+        }
+
+        div.appendChild(body);
+        panel.appendChild(div);
+      }
+
+      return panel;
     }
 
     // ── Append message ──
@@ -803,14 +1016,26 @@
           bubble.appendChild(src);
         }
 
-        // Meta badges
+        // Meta badges + debug toggle
         if (data) {
           const meta = document.createElement('div');
           meta.className = 'msg-meta';
           if (data.intent === 'data') meta.innerHTML += '<span class="badge badge-data">Данные</span>';
           if (data.intent === 'knowledge') meta.innerHTML += '<span class="badge badge-knowledge">База знаний</span>';
           if (data.latency_ms) meta.innerHTML += `<span class="badge badge-latency">${data.latency_ms}ms</span>`;
-          if (meta.innerHTML) bubble.appendChild(meta);
+          if (data.debug) {
+            const dbgBtn = document.createElement('span');
+            dbgBtn.className = 'badge badge-debug';
+            dbgBtn.textContent = 'Debug';
+            dbgBtn.onclick = () => {
+              let panel = bubble.querySelector('.debug-panel');
+              if (panel) { panel.remove(); return; }
+              panel = renderDebug(data.debug);
+              bubble.appendChild(panel);
+            };
+            meta.appendChild(dbgBtn);
+          }
+          if (meta.innerHTML || meta.children.length) bubble.appendChild(meta);
         }
       } else if (role === 'loading') {
         bubble.innerHTML = `<div class="typing-dots"><span></span><span></span><span></span></div><span>${esc(text)}</span>`;
@@ -826,7 +1051,7 @@
     }
 
     // ── Clarification message with confirm/edit buttons ──
-    function appendClarification(text) {
+    function appendClarification(text, data) {
       const container = document.getElementById('messages');
       const row = document.createElement('div');
       row.className = 'msg-row assistant clarification';
@@ -863,6 +1088,24 @@
       btns.appendChild(yesBtn);
       btns.appendChild(noBtn);
       bubble.appendChild(btns);
+
+      // Debug badge for clarification
+      if (data && data.debug) {
+        const meta = document.createElement('div');
+        meta.className = 'msg-meta';
+        if (data.latency_ms) meta.innerHTML += `<span class="badge badge-latency">${data.latency_ms}ms</span>`;
+        const dbgBtn = document.createElement('span');
+        dbgBtn.className = 'badge badge-debug';
+        dbgBtn.textContent = 'Debug';
+        dbgBtn.onclick = () => {
+          let panel = bubble.querySelector('.debug-panel');
+          if (panel) { panel.remove(); return; }
+          panel = renderDebug(data.debug);
+          bubble.appendChild(panel);
+        };
+        meta.appendChild(dbgBtn);
+        bubble.appendChild(meta);
+      }
 
       row.appendChild(avatar);
       row.appendChild(bubble);
