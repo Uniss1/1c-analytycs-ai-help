@@ -13,11 +13,11 @@ async def format_response(
     question: str,
     raw_data: list[dict],
     register_name: str,
-) -> str:
+) -> tuple[str, dict]:
     """Use LLM (GPU 2) to format raw data into a human answer.
 
     Input: question + JSON data from 1C.
-    Output: natural language answer in Russian.
+    Output: (answer, debug_info).
     """
     data_str = json.dumps(raw_data[:50], ensure_ascii=False, default=str)
     prompt = _SYSTEM_PROMPT.replace("{question}", question).replace("{data}", data_str)
@@ -27,4 +27,11 @@ async def format_response(
         system_prompt=prompt,
         user_message=question,
     )
-    return response.strip() if response else "Не удалось сформировать ответ."
+    answer = response.strip() if response else "Не удалось сформировать ответ."
+
+    debug_info = {
+        "input_data_rows": len(raw_data),
+        "input_data_sent": data_str[:2000],
+        "raw_llm_response": response,
+    }
+    return answer, debug_info

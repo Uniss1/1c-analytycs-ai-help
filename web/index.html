@@ -894,6 +894,8 @@
 
           case 'router':
             body.innerHTML = `<span class="debug-key">intent:</span> <span class="debug-val">${esc(step.intent)}</span>`;
+            if (step.input) body.innerHTML += `<br><span class="debug-key">input:</span> <span class="debug-val">${esc(step.input)}</span>`;
+            if (step.raw_llm_response) body.innerHTML += `<br><span class="debug-key">LLM ответ:</span> <span class="debug-val">${esc(step.raw_llm_response)}</span>`;
             break;
 
           case 'metadata':
@@ -909,7 +911,26 @@
           case 'param_extractor':
           case 'param_extractor_retry':
             body.innerHTML = `<span class="debug-key">needs_clarification:</span> <span class="debug-val">${step.needs_clarification}</span>`;
+            if (step.date_fallback_applied) body.innerHTML += ` <span class="debug-val" style="color:#ffa726">date_fallback applied</span>`;
+            if (step.input_message) {
+              body.innerHTML += `<br><span class="debug-key">input:</span> <span class="debug-val">${esc(step.input_message)}</span>`;
+            }
+            if (step.metadata_sent) {
+              body.innerHTML += `<br><span class="debug-key">metadata →</span>`;
+              const m = document.createElement('code');
+              m.className = 'debug-query';
+              m.textContent = step.metadata_sent;
+              body.appendChild(m);
+            }
+            if (step.raw_llm_response) {
+              body.innerHTML += `<span class="debug-key">LLM raw ответ →</span>`;
+              const r = document.createElement('code');
+              r.className = 'debug-query';
+              r.textContent = step.raw_llm_response;
+              body.appendChild(r);
+            }
             if (step.params) {
+              body.innerHTML += `<span class="debug-key">Parsed params →</span>`;
               const json = document.createElement('code');
               json.className = 'debug-json';
               json.textContent = JSON.stringify(step.params, null, 2);
@@ -961,6 +982,20 @@
 
           case 'formatter':
             body.innerHTML = `<span class="debug-key">raw_data_rows:</span> <span class="debug-val">${step.raw_data_rows}</span>`;
+            if (step.input_data_sent) {
+              body.innerHTML += `<br><span class="debug-key">Данные отправленные в LLM →</span>`;
+              const d = document.createElement('code');
+              d.className = 'debug-json';
+              d.textContent = step.input_data_sent;
+              body.appendChild(d);
+            }
+            if (step.raw_llm_response) {
+              body.innerHTML += `<span class="debug-key">LLM ответ →</span>`;
+              const r = document.createElement('code');
+              r.className = 'debug-query';
+              r.textContent = step.raw_llm_response;
+              body.appendChild(r);
+            }
             break;
 
           case 'clarification_response':
@@ -1029,11 +1064,14 @@
             dbgBtn.textContent = 'Debug';
             dbgBtn.onclick = () => {
               let panel = bubble.querySelector('.debug-panel');
-              if (panel) { panel.remove(); return; }
+              if (panel) { panel.style.display = panel.style.display === 'none' ? 'block' : 'none'; return; }
               panel = renderDebug(data.debug);
               bubble.appendChild(panel);
             };
             meta.appendChild(dbgBtn);
+            // Auto-open debug panel
+            const autoPanel = renderDebug(data.debug);
+            bubble.appendChild(autoPanel);
           }
           if (meta.innerHTML || meta.children.length) bubble.appendChild(meta);
         }

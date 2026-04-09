@@ -124,10 +124,12 @@ async def chat(req: ChatRequest):
 
     # Classify intent
     t0 = time.monotonic()
-    intent = await classify_intent(req.message, req.dashboard_context)
+    intent, router_debug = await classify_intent(req.message, req.dashboard_context)
     debug["steps"].append({
         "step": "router",
         "intent": intent,
+        "input": router_debug.get("input"),
+        "raw_llm_response": router_debug.get("raw_llm_response"),
         "ms": int((time.monotonic() - t0) * 1000),
     })
 
@@ -202,10 +204,15 @@ async def _handle_data(
     # Extract structured params via LLM
     t0 = time.monotonic()
     extraction = await extract_params(message, register_meta)
+    ext_debug = extraction.get("debug", {})
     debug["steps"].append({
         "step": "param_extractor",
         "needs_clarification": extraction["needs_clarification"],
         "params": extraction["params"],
+        "input_message": ext_debug.get("input_message"),
+        "metadata_sent": ext_debug.get("metadata_sent"),
+        "raw_llm_response": ext_debug.get("raw_llm_response"),
+        "date_fallback_applied": ext_debug.get("date_fallback_applied"),
         "ms": int((time.monotonic() - t0) * 1000),
     })
 
@@ -258,10 +265,13 @@ async def _handle_clarification_response(
         combined = f"Исходный вопрос: {original_desc}. Уточнение пользователя: {message}"
         t0 = time.monotonic()
         extraction = await extract_params(combined, register_meta)
+        ext_debug = extraction.get("debug", {})
         debug["steps"].append({
             "step": "param_extractor_retry",
             "needs_clarification": extraction["needs_clarification"],
             "params": extraction["params"],
+            "input_message": ext_debug.get("input_message"),
+            "raw_llm_response": ext_debug.get("raw_llm_response"),
             "ms": int((time.monotonic() - t0) * 1000),
         })
 
@@ -387,10 +397,12 @@ async def _execute_query_flow(
 
     # Format response
     t0 = time.monotonic()
-    answer = await format_response(message, data, register_name)
+    answer, fmt_debug = await format_response(message, data, register_name)
     debug["steps"].append({
         "step": "formatter",
         "raw_data_rows": len(data),
+        "input_data_sent": fmt_debug.get("input_data_sent"),
+        "raw_llm_response": fmt_debug.get("raw_llm_response"),
         "ms": int((time.monotonic() - t0) * 1000),
     })
 

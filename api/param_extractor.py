@@ -106,6 +106,7 @@ async def extract_params(
     )
 
     response = await generate(role="query", system_prompt=prompt, user_message=message)
+    raw_response = response
     params = _parse_llm_json(response)
 
     if not params:
@@ -113,10 +114,26 @@ async def extract_params(
             "params": None,
             "needs_clarification": True,
             "clarification_text": "Не удалось разобрать ваш вопрос. Попробуйте переформулировать.",
+            "debug": {
+                "input_message": message,
+                "metadata_sent": metadata_text,
+                "raw_llm_response": raw_response,
+                "parsed": None,
+                "date_fallback": None,
+            },
         }
 
     # Fallback: rule-based date parsing
+    before_fallback = {
+        "from": (params.get("period") or {}).get("from"),
+        "to": (params.get("period") or {}).get("to"),
+    }
     params = _apply_date_fallback(params, message)
+    after_fallback = {
+        "from": (params.get("period") or {}).get("from"),
+        "to": (params.get("period") or {}).get("to"),
+    }
+    date_fallback_applied = before_fallback != after_fallback
 
     needs_clarification = params.get("needs_clarification", False)
     clarification_text = None
@@ -127,4 +144,11 @@ async def extract_params(
         "params": params,
         "needs_clarification": needs_clarification,
         "clarification_text": clarification_text,
+        "debug": {
+            "input_message": message,
+            "metadata_sent": metadata_text,
+            "raw_llm_response": raw_response,
+            "parsed": params,
+            "date_fallback_applied": date_fallback_applied,
+        },
     }
