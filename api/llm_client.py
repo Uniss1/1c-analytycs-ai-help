@@ -4,25 +4,16 @@ import httpx
 
 from .config import settings
 
-# Each GPU runs its own Ollama instance on a different port
-# GPU 3 is spare (knowledge flow delegated to ai-chat service)
-GPU_PORTS = {
-    "router": 11434,      # GPU 0
-    "query": 11435,        # GPU 1
-    "formatter": 11436,    # GPU 2
-    "spare": 11437,        # GPU 3 — available for parallel requests
-}
-
 
 async def generate(role: str, system_prompt: str, user_message: str) -> str:
     """Send request to the appropriate GPU's Ollama instance.
 
     role: one of 'router', 'query', 'formatter'
     """
-    port = GPU_PORTS[role]
+    url = settings.gpu_url(role)
     async with httpx.AsyncClient(timeout=60) as client:
         response = await client.post(
-            f"http://localhost:{port}/api/generate",
+            f"{url}/api/generate",
             json={
                 "model": settings.model_name,
                 "system": system_prompt,
