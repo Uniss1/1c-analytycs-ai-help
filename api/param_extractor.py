@@ -5,7 +5,6 @@ import logging
 from pathlib import Path
 
 from .llm_client import generate
-from .date_parser import parse_period
 
 logger = logging.getLogger(__name__)
 
@@ -14,16 +13,39 @@ _SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
 
 
 def _format_metadata(register_metadata: dict) -> str:
-    """Format register metadata for LLM prompt."""
+    """Format register metadata for LLM prompt, showing allowed values and defaults."""
     lines = [f"Регистр: {register_metadata['name']}"]
     if register_metadata.get("description"):
         lines.append(f"Описание: {register_metadata['description']}")
+
+    lines.append("")
+    lines.append("Измерения:")
     for dim in register_metadata.get("dimensions", []):
-        desc = f" — {dim['description']}" if dim.get("description") else ""
-        lines.append(f"Измерение: {dim['name']} ({dim['data_type']}){desc}")
+        required = dim.get("required", False)
+        req_label = "обязательное" if required else "необязательное"
+        default = dim.get("default_value")
+        filter_type = dim.get("filter_type", "=")
+        allowed = dim.get("allowed_values", [])
+
+        parts = [f"  {dim['name']} ({dim['data_type']}) — {req_label}"]
+        if filter_type == "year_month":
+            parts.append(f"    фильтр: ГОД/МЕСЯЦ")
+        elif filter_type == "range":
+            parts.append(f"    фильтр: диапазон (от/до)")
+        if default:
+            parts.append(f"    по умолчанию: {default}")
+        if allowed:
+            parts.append(f"    допустимые значения: {', '.join(str(v) for v in allowed)}")
+        if dim.get("description"):
+            parts.append(f"    описание: {dim['description']}")
+        lines.extend(parts)
+
+    lines.append("")
+    lines.append("Ресурсы:")
     for res in register_metadata.get("resources", []):
         desc = f" — {res['description']}" if res.get("description") else ""
-        lines.append(f"Ресурс: {res['name']} ({res['data_type']}){desc}")
+        lines.append(f"  {res['name']} ({res['data_type']}){desc}")
+
     return "\n".join(lines)
 
 
@@ -43,8 +65,10 @@ def _build_clarification(params: dict, register_metadata: dict) -> str:
             lines.append(f"- {key}: {val}")
 
     period = params.get("period", {})
-    if period.get("from") and period.get("to"):
-        lines.append(f"- Период: {period['from']} — {period['to']}")
+    year = period.get("year")
+    month = period.get("month")
+    if year and month:
+        lines.append(f"- Период: {month}.{year}")
     else:
         lines.append("- Период: не указан")
 
@@ -55,6 +79,34 @@ def _build_clarification(params: dict, register_metadata: dict) -> str:
     group_by = params.get("group_by", [])
     if group_by:
         lines.append(f"- Группировка: {', '.join(group_by)}")
+
+    # Show what's missing with allowed values
+    missing = []
+    for dim in register_metadata.get("dimensions", []):
+        dim_name = dim["name"]
+        required = dim.get("required", False)
+        default = dim.get("default_value")
+        filter_type = dim.get("filter_type", "=")
+
+        if not required or default:
+            continue
+
+        if filter_type == "year_month":
+            if not (year and month):
+                missing.append(f"- {dim_name}: укажите год и месяц")
+        elif filter_type == "=":
+            val = filters.get(dim_name)
+            if val is None:
+                allowed = dim.get("allowed_values", [])
+                if allowed:
+                    missing.append(f"- {dim_name}: выберите из [{', '.join(str(v) for v in allowed)}]")
+                else:
+                    missing.append(f"- {dim_name}: укажите значение")
+
+    if missing:
+        lines.append("")
+        lines.append("Не хватает:")
+        lines.extend(missing)
 
     lines.append("")
     lines.append("Уточните или подтвердите.")
@@ -74,19 +126,6 @@ def _parse_llm_json(response: str) -> dict | None:
     except json.JSONDecodeError:
         logger.error("Failed to parse LLM JSON: %s", text[:200])
         return None
-
-
-def _apply_date_fallback(params: dict, question: str) -> dict:
-    """If LLM didn't extract period, try rule-based date parser."""
-    period = params.get("period", {})
-    if not period.get("from") or not period.get("to"):
-        dates = parse_period(question)
-        if dates:
-            params["period"] = {
-                "from": dates["Начало"],
-                "to": dates["Конец"],
-            }
-    return params
 
 
 async def extract_params(
@@ -119,21 +158,8 @@ async def extract_params(
                 "metadata_sent": metadata_text,
                 "raw_llm_response": raw_response,
                 "parsed": None,
-                "date_fallback": None,
             },
         }
-
-    # Fallback: rule-based date parsing
-    before_fallback = {
-        "from": (params.get("period") or {}).get("from"),
-        "to": (params.get("period") or {}).get("to"),
-    }
-    params = _apply_date_fallback(params, message)
-    after_fallback = {
-        "from": (params.get("period") or {}).get("from"),
-        "to": (params.get("period") or {}).get("to"),
-    }
-    date_fallback_applied = before_fallback != after_fallback
 
     needs_clarification = params.get("needs_clarification", False)
     clarification_text = None
@@ -149,6 +175,5 @@ async def extract_params(
             "metadata_sent": metadata_text,
             "raw_llm_response": raw_response,
             "parsed": params,
-            "date_fallback_applied": date_fallback_applied,
         },
     }

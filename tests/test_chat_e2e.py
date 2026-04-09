@@ -105,7 +105,7 @@ def _sse(*events):
 @patch("api.param_extractor.generate", new_callable=AsyncMock, return_value=json.dumps({
     "resource": "Сумма",
     "filters": {"Сценарий": "Факт"},
-    "period": {"from": "2025-03-01", "to": "2025-03-31"},
+    "period": {"year": 2025, "month": 3},
     "group_by": [],
     "order_by": "desc",
     "limit": 1000,
@@ -137,7 +137,7 @@ async def test_data_flow_e2e(mock_onec, mock_formatter, mock_extractor, mock_rou
 @patch("api.param_extractor.generate", new_callable=AsyncMock, return_value=json.dumps({
     "resource": "Сумма",
     "filters": {"Сценарий": "Факт"},
-    "period": {"from": None, "to": None},
+    "period": {"year": None, "month": None},
     "group_by": ["ДЗО"],
     "order_by": "desc",
     "limit": 1000,
@@ -176,7 +176,7 @@ async def test_clarification_confirm(mock_onec, mock_formatter, mock_router, cli
         "params": {
             "resource": "Сумма",
             "filters": {"Сценарий": "Факт"},
-            "period": {"from": "2025-03-01", "to": "2025-03-31"},
+            "period": {"year": 2025, "month": 3},
             "group_by": [],
             "order_by": "desc",
             "limit": 1000,
@@ -237,7 +237,7 @@ async def test_knowledge_flow_e2e(mock_router, client):
 @patch("api.param_extractor.generate", new_callable=AsyncMock, return_value=json.dumps({
     "resource": "Сумма",
     "filters": {"Сценарий": "Факт"},
-    "period": {"from": "2025-03-01", "to": "2025-03-31"},
+    "period": {"year": 2025, "month": 3},
     "group_by": [],
     "order_by": "desc",
     "limit": 1000,
@@ -276,7 +276,7 @@ async def test_cache_hit(mock_onec, mock_formatter, mock_extractor, mock_router,
 @patch("api.param_extractor.generate", new_callable=AsyncMock, return_value=json.dumps({
     "resource": "Сумма",
     "filters": {"Сценарий": "Факт"},
-    "period": {"from": "2025-01-01", "to": "2025-03-31"},
+    "period": {"year": 2025, "month": 1},
     "group_by": [],
     "order_by": "desc",
     "limit": 1000,

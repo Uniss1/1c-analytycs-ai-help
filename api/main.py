@@ -349,12 +349,22 @@ async def _execute_query_flow(
     result = build_query(params, register_meta)
     query_text = result["query"]
     query_params = result["params"]
+    missing_required = result.get("missing_required", [])
 
     debug["steps"].append({
         "step": "query_builder",
         "query": query_text,
         "params": query_params,
+        "missing_required": missing_required,
     })
+
+    if missing_required:
+        missing_str = ", ".join(missing_required)
+        return {
+            "answer": f"Не хватает обязательных параметров: {missing_str}",
+            "register_name": register_name,
+            "needs_clarification": True,
+        }
 
     # Validate as safety net
     allowed = {register_name}
