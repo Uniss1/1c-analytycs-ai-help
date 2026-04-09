@@ -7,148 +7,218 @@ from api.query_builder import build_query
 
 @pytest.fixture()
 def register_meta():
-    """Register metadata matching real 1C structure."""
+    """Enriched register metadata matching real 1C structure."""
     return {
-        "name": "РегистрНакопления.ВитринаВыручка",
-        "description": "ВитринаВыручка",
-        "register_type": "accumulation_turnover",
+        "name": "РегистрСведений.Витрина_Дашборда",
+        "description": "Витрина дашборда",
+        "register_type": "information",
         "dimensions": [
-            {"name": "Период_Показателя", "data_type": "Дата"},
-            {"name": "Показатель", "data_type": "Строка"},
-            {"name": "Показатель_номер", "data_type": "Строка"},
-            {"name": "КонтурПоказателя", "data_type": "Строка"},
-            {"name": "ПризнакДоход", "data_type": "Строка"},
-            {"name": "ДЗО", "data_type": "Строка"},
-            {"name": "Сценарий", "data_type": "Строка"},
-            {"name": "Масштаб", "data_type": "Строка"},
-            {"name": "Ед_изм", "data_type": "Строка"},
-            {"name": "Месяц", "data_type": "Число"},
+            {
+                "name": "Период_Показателя",
+                "data_type": "Дата",
+                "required": True,
+                "default_value": None,
+                "filter_type": "year_month",
+                "allowed_values": [],
+            },
+            {
+                "name": "Сценарий",
+                "data_type": "Строка",
+                "required": True,
+                "default_value": "Факт",
+                "filter_type": "=",
+                "allowed_values": ["Факт", "План", "Прогноз"],
+            },
+            {
+                "name": "КонтурПоказателя",
+                "data_type": "Строка",
+                "required": True,
+                "default_value": "свод",
+                "filter_type": "=",
+                "allowed_values": ["свод", "детализация"],
+            },
+            {
+                "name": "Показатель",
+                "data_type": "Строка",
+                "required": True,
+                "default_value": None,
+                "filter_type": "=",
+                "allowed_values": ["Выручка", "EBITDA", "Чистая прибыль"],
+            },
+            {
+                "name": "ДЗО",
+                "data_type": "Строка",
+                "required": True,
+                "default_value": None,
+                "filter_type": "=",
+                "allowed_values": ["Газпром нефть", "СИБУР", "Роснефть"],
+            },
+            {
+                "name": "Масштаб",
+                "data_type": "Строка",
+                "required": False,
+                "default_value": None,
+                "filter_type": "=",
+                "allowed_values": ["тыс.", "млн.", "млрд."],
+            },
         ],
         "resources": [
             {"name": "Сумма", "data_type": "Число"},
-            {"name": "Выручка", "data_type": "Число"},
-            {"name": "ОЗП", "data_type": "Число"},
         ],
     }
 
 
-def test_simple_aggregate(register_meta):
-    """Simple SUM query with period and default filters."""
+def test_all_required_with_defaults(register_meta):
+    """All required filters present — defaults fill in Сценарий and КонтурПоказателя."""
     params = {
         "resource": "Сумма",
-        "filters": {"Сценарий": "Факт", "КонтурПоказателя": "свод"},
-        "period": {"from": "2025-03-01", "to": "2025-03-31"},
+        "filters": {
+            "Показатель": "Выручка",
+            "ДЗО": "Газпром нефть",
+        },
+        "period": {"year": 2025, "month": 3},
         "group_by": [],
         "order_by": "desc",
         "limit": 1000,
     }
     result = build_query(params, register_meta)
 
-    assert "СУММА(Сумма)" in result["query"]
-    assert "ВитринаВыручка" in result["query"]
-    assert "Период_Показателя >= &Начало" in result["query"]
-    assert "Период_Показателя <= &Конец" in result["query"]
-    assert "Сценарий = &Сценарий" in result["query"]
-    assert result["params"]["Начало"] == "2025-03-01"
-    assert result["params"]["Конец"] == "2025-03-31"
+    assert result["query"] is not None
+    assert result["missing_required"] == []
+    # year_month generates ГОД()/МЕСЯЦ()
+    assert "ГОД(Период_Показателя) = &Год" in result["query"]
+    assert "МЕСЯЦ(Период_Показателя) = &Месяц" in result["query"]
+    assert result["params"]["Год"] == 2025
+    assert result["params"]["Месяц"] == 3
+    # Defaults applied
     assert result["params"]["Сценарий"] == "Факт"
     assert result["params"]["КонтурПоказателя"] == "свод"
+    # User-provided
+    assert result["params"]["Показатель"] == "Выручка"
+    assert result["params"]["ДЗО"] == "Газпром нефть"
 
 
-def test_group_by_dzo(register_meta):
-    """Group by ДЗО dimension."""
+def test_year_month_filter(register_meta):
+    """year_month filter generates ГОД()/МЕСЯЦ() syntax."""
     params = {
         "resource": "Сумма",
-        "filters": {"Сценарий": "Факт", "КонтурПоказателя": "свод"},
-        "period": {"from": "2025-01-01", "to": "2025-03-31"},
+        "filters": {
+            "Показатель": "EBITDA",
+            "ДЗО": "СИБУР",
+        },
+        "period": {"year": 2024, "month": 12},
+        "group_by": [],
+        "order_by": "desc",
+        "limit": 1000,
+    }
+    result = build_query(params, register_meta)
+
+    assert "ГОД(Период_Показателя) = &Год" in result["query"]
+    assert "МЕСЯЦ(Период_Показателя) = &Месяц" in result["query"]
+    # Must NOT contain >= / <= style
+    assert ">=" not in result["query"]
+    assert "<=" not in result["query"]
+
+
+def test_group_by_excluded_from_where(register_meta):
+    """Dimension in group_by goes to SELECT, not WHERE."""
+    params = {
+        "resource": "Сумма",
+        "filters": {
+            "Показатель": "Выручка",
+        },
+        "period": {"year": 2025, "month": 3},
         "group_by": ["ДЗО"],
         "order_by": "desc",
         "limit": 1000,
     }
     result = build_query(params, register_meta)
 
+    assert result["query"] is not None
+    # ДЗО should be in SELECT and GROUP BY, not in WHERE as a filter
     assert "ДЗО," in result["query"]
     assert "СГРУППИРОВАТЬ ПО ДЗО" in result["query"]
-    assert "УПОРЯДОЧИТЬ ПО Значение УБЫВ" in result["query"]
+    # ДЗО should NOT appear as a WHERE condition
+    assert "ДЗО = &" not in result["query"]
 
 
-def test_top_n(register_meta):
-    """Top-5 query with limit."""
+def test_optional_filter_not_forced(register_meta):
+    """Optional dimension (Масштаб) is skipped when not provided."""
     params = {
         "resource": "Сумма",
-        "filters": {"Сценарий": "Факт", "КонтурПоказателя": "свод"},
-        "period": {"from": None, "to": None},
-        "group_by": ["Показатель"],
+        "filters": {
+            "Показатель": "Выручка",
+            "ДЗО": "Роснефть",
+        },
+        "period": {"year": 2025, "month": 1},
+        "group_by": [],
         "order_by": "desc",
-        "limit": 5,
+        "limit": 1000,
     }
     result = build_query(params, register_meta)
 
-    assert "ПЕРВЫЕ 5" in result["query"]
-    assert "Показатель," in result["query"]
-    assert "СГРУППИРОВАТЬ ПО Показатель" in result["query"]
-    # No period in WHERE
-    assert "Начало" not in result["params"]
+    assert result["query"] is not None
+    assert "Масштаб" not in result["query"]
 
 
-def test_ascending_order(register_meta):
-    """Ascending order (worst performers)."""
+def test_missing_required_returns_error(register_meta):
+    """Missing required dimension (no value, no default) → error."""
     params = {
         "resource": "Сумма",
-        "filters": {"Сценарий": "Факт"},
-        "period": {"from": "2025-01-01", "to": "2025-12-31"},
-        "group_by": ["ДЗО"],
+        "filters": {
+            # Missing Показатель and ДЗО (required, no defaults)
+        },
+        "period": {"year": 2025, "month": 3},
+        "group_by": [],
+        "order_by": "desc",
+        "limit": 1000,
+    }
+    result = build_query(params, register_meta)
+
+    assert result["query"] is None
+    assert "Показатель" in result["missing_required"]
+    assert "ДЗО" in result["missing_required"]
+    assert result["params"] == {}
+
+
+def test_user_value_overrides_default(register_meta):
+    """User-provided value overrides default_value."""
+    params = {
+        "resource": "Сумма",
+        "filters": {
+            "Сценарий": "План",  # overrides default "Факт"
+            "КонтурПоказателя": "детализация",  # overrides default "свод"
+            "Показатель": "Выручка",
+            "ДЗО": "Роснефть",
+        },
+        "period": {"year": 2025, "month": 6},
+        "group_by": [],
         "order_by": "asc",
         "limit": 5,
     }
     result = build_query(params, register_meta)
 
+    assert result["query"] is not None
+    assert result["params"]["Сценарий"] == "План"
+    assert result["params"]["КонтурПоказателя"] == "детализация"
+    assert "ПЕРВЫЕ 5" in result["query"]
     assert "ВОЗР" in result["query"]
 
 
-def test_no_filters(register_meta):
-    """Query without any filters."""
+def test_missing_period_when_required(register_meta):
+    """Missing period when year_month dimension is required → error."""
     params = {
         "resource": "Сумма",
-        "filters": {},
-        "period": {"from": None, "to": None},
+        "filters": {
+            "Показатель": "Выручка",
+            "ДЗО": "Газпром нефть",
+        },
+        "period": {},
         "group_by": [],
         "order_by": "desc",
         "limit": 1000,
     }
     result = build_query(params, register_meta)
 
-    assert "ГДЕ" not in result["query"]
-    assert result["params"] == {}
-
-
-def test_null_filter_values_ignored(register_meta):
-    """Null filter values are not included in WHERE."""
-    params = {
-        "resource": "Сумма",
-        "filters": {"Сценарий": "Факт", "ДЗО": None, "КонтурПоказателя": None},
-        "period": {"from": None, "to": None},
-        "group_by": [],
-        "order_by": "desc",
-        "limit": 1000,
-    }
-    result = build_query(params, register_meta)
-
-    assert "Сценарий = &Сценарий" in result["query"]
-    assert "ДЗО" not in result["query"]
-    assert "КонтурПоказателя" not in result["query"]
-
-
-def test_prognoz_scenario(register_meta):
-    """Scenario Прогноз instead of Факт."""
-    params = {
-        "resource": "Сумма",
-        "filters": {"Сценарий": "Прогноз", "КонтурПоказателя": "свод"},
-        "period": {"from": "2025-03-01", "to": "2025-03-31"},
-        "group_by": [],
-        "order_by": "desc",
-        "limit": 1000,
-    }
-    result = build_query(params, register_meta)
-
-    assert result["params"]["Сценарий"] == "Прогноз"
+    assert result["query"] is None
+    assert "Период_Показателя" in result["missing_required"]

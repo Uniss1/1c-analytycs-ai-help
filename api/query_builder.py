@@ -2,15 +2,10 @@
 
 Takes the JSON produced by param_extractor and builds a valid
 1C:Enterprise query string. No LLM involved — pure template logic.
+
+Uses enriched metadata (required, default_value, filter_type, allowed_values)
+to ensure all required dimensions appear in WHERE with correct syntax.
 """
-
-
-def _date_field(register_metadata: dict) -> str:
-    """Find the date dimension field name."""
-    for dim in register_metadata.get("dimensions", []):
-        if dim["data_type"] == "Дата":
-            return dim["name"]
-    return "Период_Показателя"
 
 
 def build_query(params: dict, register_metadata: dict) -> dict:
@@ -18,9 +13,11 @@ def build_query(params: dict, register_metadata: dict) -> dict:
 
     Args:
         params: extracted params from param_extractor (resource, filters, period, group_by, etc.)
-        register_metadata: register metadata with name, dimensions, resources
+        register_metadata: register metadata with enriched dimensions
 
-    Returns: {"query": str, "params": dict}
+    Returns:
+        {"query": str | None, "params": dict, "missing_required": list}
+        If missing_required is non-empty, query is None.
     """
     register_name = register_metadata["name"]
     resource = params.get("resource", "Сумма")
@@ -30,27 +27,62 @@ def build_query(params: dict, register_metadata: dict) -> dict:
     filters = params.get("filters", {})
     period = params.get("period", {})
 
-    date_field = _date_field(register_metadata)
-    dim_names = {d["name"] for d in register_metadata.get("dimensions", [])}
+    group_by_set = set(group_by)
 
-    # Build WHERE conditions and query params
     conditions = []
     query_params = {}
+    missing_required = []
 
-    # Period filter
-    if period.get("from"):
-        conditions.append(f"{date_field} >= &Начало")
-        query_params["Начало"] = period["from"]
-    if period.get("to"):
-        conditions.append(f"{date_field} <= &Конец")
-        query_params["Конец"] = period["to"]
+    for dim in register_metadata.get("dimensions", []):
+        dim_name = dim["name"]
+        filter_type = dim.get("filter_type", "=")
+        required = dim.get("required", False)
+        default_value = dim.get("default_value")
 
-    # Dimension filters
-    for dim_name, value in filters.items():
-        if value is not None and dim_name in dim_names:
-            param_key = dim_name.replace(" ", "_")
-            conditions.append(f"{dim_name} = &{param_key}")
-            query_params[param_key] = value
+        # Dimensions in group_by go to SELECT, not WHERE
+        if dim_name in group_by_set:
+            continue
+
+        if filter_type == "year_month":
+            # Period uses ГОД()/МЕСЯЦ() syntax
+            year = (period or {}).get("year")
+            month = (period or {}).get("month")
+            if year is not None and month is not None:
+                conditions.append(f"ГОД({dim_name}) = &Год")
+                conditions.append(f"МЕСЯЦ({dim_name}) = &Месяц")
+                query_params["Год"] = year
+                query_params["Месяц"] = month
+            elif required:
+                missing_required.append(dim_name)
+
+        elif filter_type == "range":
+            # Range uses >= / <= syntax
+            start = (period or {}).get("from")
+            end = (period or {}).get("to")
+            if start is not None:
+                conditions.append(f"{dim_name} >= &Начало")
+                query_params["Начало"] = start
+            if end is not None:
+                conditions.append(f"{dim_name} <= &Конец")
+                query_params["Конец"] = end
+            if required and start is None and end is None:
+                missing_required.append(dim_name)
+
+        else:
+            # Equality filter: user value > default > missing
+            value = filters.get(dim_name)
+            if value is None and default_value is not None:
+                value = default_value
+            if value is not None:
+                param_key = dim_name.replace(" ", "_")
+                conditions.append(f"{dim_name} = &{param_key}")
+                query_params[param_key] = value
+            elif required:
+                missing_required.append(dim_name)
+
+    # If any required dimension is missing, return error
+    if missing_required:
+        return {"query": None, "missing_required": missing_required, "params": {}}
 
     # SELECT clause
     if group_by:
@@ -79,4 +111,4 @@ def build_query(params: dict, register_metadata: dict) -> dict:
 ИЗ
     {register_name}{where_clause}{group_clause}{order_clause}"""
 
-    return {"query": query, "params": query_params}
+    return {"query": query, "params": query_params, "missing_required": []}
