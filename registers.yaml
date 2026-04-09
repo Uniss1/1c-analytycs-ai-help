@@ -4,10 +4,52 @@
 #   python3 scripts/seed_metadata.py   — загрузит в metadata.db
 
 registers:
-  - РегистрНакопления.ВитринаВыручка
-  - РегистрНакопления.ВитринаЗатрат
-  - РегистрНакопления.ВитринаПерсонал
-  - РегистрНакопления.ВитринаПродажи
-  - РегистрНакопления.ВитринаПоказатели
-  - РегистрНакопления.ВитринаСводная
-  - РегистрНакопления.ВитринаБюджет
+  - name: РегистрСведений.Витрина_Дашборда
+    description: Витрина дашборда
+    type: information_register
+
+    dimensions:
+      - name: Сценарий
+        data_type: Строка
+        required: true
+        default: "Факт"
+        values: ["Факт", "Прогноз", "План"]
+
+      - name: КонтурПоказателя
+        data_type: Строка
+        required: true
+        default: "свод"
+        values: ["свод", "детализация"]
+
+      - name: Показатель
+        data_type: Строка
+        required: true
+        default: null
+        values: ["Выручка", "ОЗП", "Маржа", "EBITDA"]
+
+      - name: ДЗО
+        data_type: Строка
+        required: true
+        default: null
+        values: ["Консолидация", "ДЗО-1", "ДЗО-2"]
+
+      - name: Период_Показателя
+        data_type: Дата
+        required: true
+        default: null
+        filter_type: "year_month"
+
+      - name: Масштаб
+        data_type: Строка
+        required: false
+        values: ["тыс.", "млн."]
+
+    resources:
+      - name: Сумма
+
+    keywords:
+      - выручка
+      - дашборд
+      - витрина
+      - озп
+      - маржа
