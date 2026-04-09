@@ -1,5 +1,6 @@
 """Populate metadata.db from registers.yaml."""
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -36,11 +37,15 @@ def create_schema(cur: sqlite3.Cursor) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS dimensions (
-            id          INTEGER PRIMARY KEY,
-            register_id INTEGER NOT NULL REFERENCES registers(id),
-            name        TEXT NOT NULL,
-            data_type   TEXT NOT NULL,
-            description TEXT
+            id             INTEGER PRIMARY KEY,
+            register_id    INTEGER NOT NULL REFERENCES registers(id),
+            name           TEXT NOT NULL,
+            data_type      TEXT NOT NULL,
+            description    TEXT,
+            required       INTEGER NOT NULL DEFAULT 0,
+            default_value  TEXT,
+            filter_type    TEXT NOT NULL DEFAULT '=',
+            allowed_values TEXT
         );
 
         CREATE TABLE IF NOT EXISTS resources (
@@ -93,9 +98,20 @@ def seed_from_yaml(cur: sqlite3.Cursor, data: dict) -> None:
         cur.execute("DELETE FROM keywords WHERE register_id = ?", (reg_id,))
 
         for dim in reg.get("dimensions", []):
+            values = dim.get("values")
+            allowed_values = json.dumps(values, ensure_ascii=False) if values else None
             cur.execute(
-                "INSERT INTO dimensions (register_id, name, data_type, description) VALUES (?, ?, ?, ?)",
-                (reg_id, dim["name"], dim["data_type"], dim.get("description")),
+                "INSERT INTO dimensions (register_id, name, data_type, description, required, default_value, filter_type, allowed_values) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    reg_id,
+                    dim["name"],
+                    dim["data_type"],
+                    dim.get("description"),
+                    1 if dim.get("required") else 0,
+                    dim.get("default"),
+                    dim.get("filter_type", "="),
+                    allowed_values,
+                ),
             )
 
         for res in reg.get("resources", []):

@@ -4,6 +4,7 @@ Stores mapping: dashboard -> registers -> dimensions/resources.
 Populated by scripts/sync_metadata.py from 1C Analytics.
 """
 
+import json
 import logging
 import sqlite3
 import re
@@ -53,18 +54,33 @@ def _enrich_register(row: sqlite3.Row) -> dict:
     conn = _get_conn()
     reg_id = row["id"]
     dims = conn.execute(
-        "SELECT name, data_type, description FROM dimensions WHERE register_id = ?",
+        "SELECT name, data_type, description, required, default_value, filter_type, allowed_values "
+        "FROM dimensions WHERE register_id = ?",
         (reg_id,),
     ).fetchall()
     ress = conn.execute(
         "SELECT name, data_type, description FROM resources WHERE register_id = ?",
         (reg_id,),
     ).fetchall()
+
+    enriched_dims = []
+    for d in dims:
+        dim_dict = dict(d)
+        # Convert required from int to bool
+        dim_dict["required"] = bool(dim_dict.get("required"))
+        # Parse allowed_values from JSON string to list
+        av = dim_dict.get("allowed_values")
+        if av:
+            dim_dict["allowed_values"] = json.loads(av)
+        else:
+            dim_dict["allowed_values"] = []
+        enriched_dims.append(dim_dict)
+
     return {
         "name": row["name"],
         "description": row["description"],
         "register_type": row["register_type"],
-        "dimensions": [dict(d) for d in dims],
+        "dimensions": enriched_dims,
         "resources": [dict(r) for r in ress],
     }
 

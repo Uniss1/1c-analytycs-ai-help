@@ -35,14 +35,20 @@ def db_path():
             INSERT INTO dashboard_registers (dashboard_id, register_id, widget_title) VALUES (2, 2, 'Затраты');
             INSERT INTO dashboard_registers (dashboard_id, register_id, widget_title) VALUES (2, 3, 'ФОТ');
 
-            INSERT INTO dimensions (register_id, name, data_type) VALUES (1, 'Период', 'Дата');
-            INSERT INTO dimensions (register_id, name, data_type) VALUES (1, 'Подразделение', 'Строка');
+            INSERT INTO dimensions (register_id, name, data_type, required, default_value, filter_type, allowed_values)
+                VALUES (1, 'Период', 'Дата', 1, NULL, 'year_month', NULL);
+            INSERT INTO dimensions (register_id, name, data_type, required, default_value, filter_type, allowed_values)
+                VALUES (1, 'Подразделение', 'Строка', 1, NULL, '=', '["Отдел1", "Отдел2", "Отдел3"]');
             INSERT INTO resources (register_id, name, data_type) VALUES (1, 'Сумма', 'Число');
 
-            INSERT INTO dimensions (register_id, name, data_type) VALUES (2, 'Период', 'Дата');
+            INSERT INTO dimensions (register_id, name, data_type, required, default_value, filter_type, allowed_values)
+                VALUES (2, 'Период', 'Дата', 1, NULL, 'year_month', NULL);
+            INSERT INTO dimensions (register_id, name, data_type, required, default_value, filter_type, allowed_values)
+                VALUES (2, 'Сценарий', 'Строка', 1, 'Факт', '=', '["Факт", "План"]');
             INSERT INTO resources (register_id, name, data_type) VALUES (2, 'Сумма', 'Число');
 
-            INSERT INTO dimensions (register_id, name, data_type) VALUES (3, 'Период', 'Дата');
+            INSERT INTO dimensions (register_id, name, data_type, required, default_value, filter_type, allowed_values)
+                VALUES (3, 'Период', 'Дата', 1, NULL, 'year_month', NULL);
             INSERT INTO resources (register_id, name, data_type) VALUES (3, 'Численность', 'Число');
 
             INSERT INTO keywords (register_id, keyword) VALUES (1, 'выручка');
@@ -67,6 +73,17 @@ def test_find_register_by_keyword(db_path):
     assert "resources" in result
     assert result["register_type"] == "accumulation_turnover"
     assert "выручка" in debug["matching_keywords"]
+
+    # Check enriched dimension fields
+    period_dim = next(d for d in result["dimensions"] if d["name"] == "Период")
+    assert period_dim["required"] is True
+    assert period_dim["filter_type"] == "year_month"
+    assert period_dim["allowed_values"] == []
+
+    podrazd_dim = next(d for d in result["dimensions"] if d["name"] == "Подразделение")
+    assert podrazd_dim["required"] is True
+    assert podrazd_dim["allowed_values"] == ["Отдел1", "Отдел2", "Отдел3"]
+    assert podrazd_dim["filter_type"] == "="
 
 
 def test_find_register_with_dashboard_context(db_path):

@@ -37,7 +37,9 @@ def _setup_dbs(tmp_path):
             PRIMARY KEY (dashboard_id, register_id)
         );
         CREATE TABLE dimensions (
-            id INTEGER PRIMARY KEY, register_id INTEGER, name TEXT, data_type TEXT, description TEXT
+            id INTEGER PRIMARY KEY, register_id INTEGER, name TEXT, data_type TEXT, description TEXT,
+            required INTEGER NOT NULL DEFAULT 0, default_value TEXT,
+            filter_type TEXT NOT NULL DEFAULT '=', allowed_values TEXT
         );
         CREATE TABLE resources (
             id INTEGER PRIMARY KEY, register_id INTEGER, name TEXT, data_type TEXT, description TEXT
@@ -49,9 +51,12 @@ def _setup_dbs(tmp_path):
         INSERT INTO dashboards VALUES (1, 'sales', 'Продажи', '/analytics/sales*', '2025-01-01');
         INSERT INTO registers VALUES (1, 'РегистрНакопления.ВитринаВыручка', 'Выручка', 'accumulation_turnover', '2025-01-01');
         INSERT INTO dashboard_registers VALUES (1, 1, 'Выручка по месяцам');
-        INSERT INTO dimensions VALUES (1, 1, 'Период', 'Дата', NULL);
-        INSERT INTO dimensions VALUES (2, 1, 'Подразделение', 'Справочник.Подразделения', NULL);
-        INSERT INTO dimensions VALUES (3, 1, 'Сценарий', 'Строка', NULL);
+        INSERT INTO dimensions (id, register_id, name, data_type, required, filter_type, allowed_values)
+            VALUES (1, 1, 'Период', 'Дата', 1, 'year_month', NULL);
+        INSERT INTO dimensions (id, register_id, name, data_type, required, default_value, filter_type, allowed_values)
+            VALUES (2, 1, 'Подразделение', 'Справочник.Подразделения', 0, NULL, '=', NULL);
+        INSERT INTO dimensions (id, register_id, name, data_type, required, default_value, filter_type, allowed_values)
+            VALUES (3, 1, 'Сценарий', 'Строка', 1, 'Факт', '=', '["Факт", "План"]');
         INSERT INTO resources VALUES (1, 1, 'Сумма', 'Число', NULL);
         INSERT INTO keywords VALUES (1, 1, 'выручка');
         INSERT INTO keywords VALUES (2, 1, 'продажи');
