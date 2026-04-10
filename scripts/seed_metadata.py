@@ -170,7 +170,10 @@ def seed_from_yaml(cur: sqlite3.Cursor, data: dict) -> None:
 
 def main() -> None:
     if not YAML_PATH.exists():
+        example = YAML_PATH.parent / "registers.example.yaml"
         print(f"ERROR: {YAML_PATH} not found")
+        if example.exists():
+            print(f"  Скопируйте шаблон: cp {example} {YAML_PATH}")
         return
 
     with open(YAML_PATH, encoding="utf-8") as f:

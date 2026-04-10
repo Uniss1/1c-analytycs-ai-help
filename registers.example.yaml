@@ -1,7 +1,12 @@
-# Регистры 1С Аналитики
-# Добавьте имена регистров, затем запустите:
+# Регистры 1С Аналитики — ШАБЛОН
+# Скопируйте в registers.yaml и настройте под своё окружение:
+#   cp registers.example.yaml registers.yaml
+#
+# Затем запустите:
 #   python3 scripts/sync_metadata.py   — заполнит из 1С (dimensions, resources, keywords)
 #   python3 scripts/seed_metadata.py   — загрузит в metadata.db
+#
+# registers.yaml в .gitignore — не затирается при git pull
 
 registers:
   - name: РегистрСведений.Витрина_Дашборда
