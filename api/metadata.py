@@ -147,6 +147,14 @@ def find_register(question: str, dashboard_context: dict | None = None) -> tuple
         row = conn.execute(query, words).fetchone()
 
     if row is None:
+        # Fallback: если регистр в базе всего один — использовать его
+        all_regs = conn.execute("SELECT * FROM registers").fetchall()
+        if len(all_regs) == 1:
+            logger.info("METADATA: no keyword match, but only 1 register — using it as fallback")
+            result = _enrich_register(all_regs[0])
+            debug_info["result"] = result["name"]
+            debug_info["fallback"] = "single_register"
+            return result, debug_info
         logger.warning("METADATA: no register found for words=%s", words)
         debug_info["result"] = "not_found"
         return None, debug_info

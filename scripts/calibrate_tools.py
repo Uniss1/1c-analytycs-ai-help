@@ -18,65 +18,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from api.tool_caller import call_with_tools
 from api.tool_defs import build_tools
+from api.metadata import init_metadata, get_all_registers
 
-# --- Test register metadata (matches registers.yaml) ---
+DB_PATH = str(Path(__file__).parent.parent / "metadata.db")
 
-TEST_REGISTER = {
-    "name": "РегистрСведений.Витрина_Дашборда",
-    "description": "Витрина дашборда",
-    "dimensions": [
-        {
-            "name": "Сценарий",
-            "data_type": "Строка",
-            "required": True,
-            "default_value": "Факт",
-            "filter_type": "=",
-            "allowed_values": ["Факт", "Прогноз", "План"],
-        },
-        {
-            "name": "КонтурПоказателя",
-            "data_type": "Строка",
-            "required": True,
-            "default_value": "свод",
-            "filter_type": "=",
-            "allowed_values": ["свод", "детализация"],
-        },
-        {
-            "name": "Показатель",
-            "data_type": "Строка",
-            "required": True,
-            "default_value": None,
-            "filter_type": "=",
-            "allowed_values": ["Выручка", "ОЗП", "Маржа", "EBITDA"],
-        },
-        {
-            "name": "ДЗО",
-            "data_type": "Строка",
-            "required": True,
-            "default_value": None,
-            "filter_type": "=",
-            "allowed_values": ["Консолидация", "ДЗО-1", "ДЗО-2"],
-        },
-        {
-            "name": "Период_Показателя",
-            "data_type": "Дата",
-            "required": True,
-            "default_value": None,
-            "filter_type": "year_month",
-        },
-        {
-            "name": "Масштаб",
-            "data_type": "Строка",
-            "required": False,
-            "default_value": None,
-            "filter_type": "=",
-            "allowed_values": ["тыс.", "млн."],
-        },
-    ],
-    "resources": [
-        {"name": "Сумма", "data_type": "Число"},
-    ],
-}
+
+def load_test_register() -> dict:
+    """Load first register from metadata.db (no hardcoded metadata)."""
+    init_metadata(DB_PATH)
+    registers = get_all_registers()
+    if not registers:
+        print("ОШИБКА: metadata.db пуст. Запустите: python3 scripts/seed_metadata.py")
+        sys.exit(1)
+    reg = registers[0]
+    print(f"Регистр: {reg['name']} ({len(reg['dimensions'])} измерений, {len(reg['resources'])} ресурсов)")
+    return reg
 
 # --- Test cases: (question, expected_tool, expected_params_subset) ---
 
@@ -216,13 +172,15 @@ def check_params(expected: dict, actual_args: dict) -> list[str]:
 
 async def run_calibration(model: str, base_url: str, api_key: str, verbose: bool = False):
     """Run all test cases and print results."""
+    test_register = load_test_register()
+
     print(f"Model: {model}")
     print(f"API URL: {base_url}")
     print(f"Test cases: {len(TEST_CASES)}")
     print()
 
     if verbose:
-        tools = build_tools(TEST_REGISTER)
+        tools = build_tools(test_register)
         print("=== Tool Definitions ===")
         print(json.dumps(tools, ensure_ascii=False, indent=2))
         print()
@@ -236,7 +194,7 @@ async def run_calibration(model: str, base_url: str, api_key: str, verbose: bool
         print(f"  Expected: {expected_tool}")
 
         result = await call_with_tools(
-            question, TEST_REGISTER,
+            question, test_register,
             model=model, base_url=base_url, api_key=api_key,
         )
 
