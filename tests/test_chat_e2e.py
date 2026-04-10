@@ -102,21 +102,26 @@ def _sse(*events):
 
 @pytest.mark.asyncio
 @patch("api.router.generate", new_callable=AsyncMock, return_value="data")
-@patch("api.param_extractor.generate", new_callable=AsyncMock, return_value=json.dumps({
-    "resource": "Сумма",
-    "filters": {"Сценарий": "Факт"},
-    "period": {"year": 2025, "month": 3},
-    "group_by": [],
-    "order_by": "desc",
-    "limit": 1000,
-    "needs_clarification": False,
-    "understood": {"описание": "Сумма выручки за март 2025"},
-}))
-@patch("api.formatter.generate", new_callable=AsyncMock, return_value="Выручка за март: 8.2 млн ₽")
-@patch("api.main.execute_query", new_callable=AsyncMock, return_value={
-    "success": True, "data": [{"Сумма": 8200000}], "total": 1, "truncated": False,
+@patch("api.main.call_with_tools", new_callable=AsyncMock, return_value={
+    "tool": "aggregate",
+    "args": {"resource": "Сумма", "scenario": "Факт", "year": 2025, "month": 3},
+    "params": {
+        "resource": "Сумма",
+        "filters": {"Сценарий": "Факт"},
+        "period": {"year": 2025, "month": 3},
+        "group_by": [],
+        "order_by": "desc",
+        "limit": 1000,
+        "needs_clarification": False,
+        "understood": {"описание": "tool=aggregate, resource=Сумма"},
+    },
+    "raw_response": {},
 })
-async def test_data_flow_e2e(mock_onec, mock_formatter, mock_extractor, mock_router, client):
+@patch("api.formatter.generate", new_callable=AsyncMock, return_value="Выручка за март: 8.2 млн ₽")
+@patch("api.main.execute_tool", new_callable=AsyncMock, return_value={
+    "success": True, "data": [{"Сумма": 8200000}], "computed": None,
+})
+async def test_data_flow_e2e(mock_onec, mock_formatter, mock_tool_caller, mock_router, client):
     """Data question goes through full pipeline."""
     async with client:
         resp = await client.post("/chat", json={"message": "Какая выручка за март?"})
@@ -134,24 +139,29 @@ async def test_data_flow_e2e(mock_onec, mock_formatter, mock_extractor, mock_rou
 
 @pytest.mark.asyncio
 @patch("api.router.generate", new_callable=AsyncMock, return_value="data")
-@patch("api.param_extractor.generate", new_callable=AsyncMock, return_value=json.dumps({
-    "resource": "Сумма",
-    "filters": {"Сценарий": "Факт"},
-    "period": {"year": None, "month": None},
-    "group_by": ["ДЗО"],
-    "order_by": "desc",
-    "limit": 1000,
-    "needs_clarification": True,
-    "understood": {"описание": "Выручка по ДЗО, период не указан"},
-}))
-async def test_clarification_flow(mock_extractor, mock_router, client):
+@patch("api.main.call_with_tools", new_callable=AsyncMock, return_value={
+    "tool": "group_by",
+    "args": {"resource": "Сумма", "group_by": "company"},
+    "params": {
+        "resource": "Сумма",
+        "filters": {"Сценарий": "Факт"},
+        "period": {},
+        "group_by": ["ДЗО"],
+        "order_by": "desc",
+        "limit": 1000,
+        "needs_clarification": True,
+        "understood": {"описание": "tool=group_by, resource=Сумма"},
+    },
+    "raw_response": {},
+})
+async def test_clarification_flow(mock_tool_caller, mock_router, client):
     """Ambiguous question triggers clarification."""
     async with client:
         resp = await client.post("/chat", json={"message": "выручка по ДЗО"})
 
     body = resp.json()
     assert body["needs_clarification"]
-    assert "Правильно я поняла" in body["answer"]
+    assert "Уточните" in body["answer"]
     assert body["intent"] == "data"
 
 
@@ -160,10 +170,25 @@ async def test_clarification_flow(mock_extractor, mock_router, client):
 @pytest.mark.asyncio
 @patch("api.router.generate", new_callable=AsyncMock, return_value="data")
 @patch("api.formatter.generate", new_callable=AsyncMock, return_value="Выручка: 10 млн")
-@patch("api.main.execute_query", new_callable=AsyncMock, return_value={
-    "success": True, "data": [{"Сумма": 10000000}], "total": 1, "truncated": False,
+@patch("api.main.call_with_tools", new_callable=AsyncMock, return_value={
+    "tool": "aggregate",
+    "args": {"resource": "Сумма", "scenario": "Факт", "year": 2025, "month": 3},
+    "params": {
+        "resource": "Сумма",
+        "filters": {"Сценарий": "Факт"},
+        "period": {"year": 2025, "month": 3},
+        "group_by": [],
+        "order_by": "desc",
+        "limit": 1000,
+        "needs_clarification": False,
+        "understood": {"описание": "tool=aggregate, resource=Сумма"},
+    },
+    "raw_response": {},
 })
-async def test_clarification_confirm(mock_onec, mock_formatter, mock_router, client):
+@patch("api.main.execute_tool", new_callable=AsyncMock, return_value={
+    "success": True, "data": [{"Сумма": 10000000}], "computed": None,
+})
+async def test_clarification_confirm(mock_onec, mock_tool_caller, mock_formatter, mock_router, client):
     """User confirms clarification → query executes."""
     from api.main import _pending_clarifications
     from api.history import create_session
@@ -190,6 +215,7 @@ async def test_clarification_confirm(mock_onec, mock_formatter, mock_router, cli
             ],
             "resources": [{"name": "Сумма", "data_type": "Число"}],
         },
+        "tool": "aggregate",
     }
 
     async with client:
@@ -234,28 +260,33 @@ async def test_knowledge_flow_e2e(mock_router, client):
 
 @pytest.mark.asyncio
 @patch("api.router.generate", new_callable=AsyncMock, return_value="data")
-@patch("api.param_extractor.generate", new_callable=AsyncMock, return_value=json.dumps({
-    "resource": "Сумма",
-    "filters": {"Сценарий": "Факт"},
-    "period": {"year": 2025, "month": 3},
-    "group_by": [],
-    "order_by": "desc",
-    "limit": 1000,
-    "needs_clarification": False,
-    "understood": {"описание": "Выручка за март"},
-}))
-@patch("api.formatter.generate", new_callable=AsyncMock, return_value="Выручка: 10 млн")
-@patch("api.main.execute_query", new_callable=AsyncMock, return_value={
-    "success": True, "data": [{"Сумма": 10000000}], "total": 1, "truncated": False,
+@patch("api.main.call_with_tools", new_callable=AsyncMock, return_value={
+    "tool": "aggregate",
+    "args": {"resource": "Сумма", "scenario": "Факт", "year": 2025, "month": 3},
+    "params": {
+        "resource": "Сумма",
+        "filters": {"Сценарий": "Факт"},
+        "period": {"year": 2025, "month": 3},
+        "group_by": [],
+        "order_by": "desc",
+        "limit": 1000,
+        "needs_clarification": False,
+        "understood": {"описание": "tool=aggregate, resource=Сумма"},
+    },
+    "raw_response": {},
 })
-async def test_cache_hit(mock_onec, mock_formatter, mock_extractor, mock_router, client):
+@patch("api.formatter.generate", new_callable=AsyncMock, return_value="Выручка: 10 млн")
+@patch("api.main.execute_tool", new_callable=AsyncMock, return_value={
+    "success": True, "data": [{"Сумма": 10000000}], "computed": None,
+})
+async def test_cache_hit(mock_onec, mock_formatter, mock_tool_caller, mock_router, client):
     """Second identical question returns cached response."""
     async with client:
         resp1 = await client.post("/chat", json={"message": "выручка за март"})
         body1 = resp1.json()
 
         mock_router.reset_mock()
-        mock_extractor.reset_mock()
+        mock_tool_caller.reset_mock()
         mock_formatter.reset_mock()
         mock_onec.reset_mock()
 
@@ -273,21 +304,26 @@ async def test_cache_hit(mock_onec, mock_formatter, mock_extractor, mock_router,
 
 @pytest.mark.asyncio
 @patch("api.router.generate", new_callable=AsyncMock, return_value="data")
-@patch("api.param_extractor.generate", new_callable=AsyncMock, return_value=json.dumps({
-    "resource": "Сумма",
-    "filters": {"Сценарий": "Факт"},
-    "period": {"year": 2025, "month": 1},
-    "group_by": [],
-    "order_by": "desc",
-    "limit": 1000,
-    "needs_clarification": False,
-    "understood": {"описание": "Выручка за Q1"},
-}))
-@patch("api.formatter.generate", new_callable=AsyncMock, return_value="Ответ")
-@patch("api.main.execute_query", new_callable=AsyncMock, return_value={
-    "success": True, "data": [{"Сумма": 1}], "total": 1, "truncated": False,
+@patch("api.main.call_with_tools", new_callable=AsyncMock, return_value={
+    "tool": "aggregate",
+    "args": {"resource": "Сумма", "scenario": "Факт", "year": 2025, "month": 1},
+    "params": {
+        "resource": "Сумма",
+        "filters": {"Сценарий": "Факт"},
+        "period": {"year": 2025, "month": 1},
+        "group_by": [],
+        "order_by": "desc",
+        "limit": 1000,
+        "needs_clarification": False,
+        "understood": {"описание": "tool=aggregate, resource=Сумма"},
+    },
+    "raw_response": {},
 })
-async def test_session_history(mock_onec, mock_formatter, mock_extractor, mock_router, client):
+@patch("api.formatter.generate", new_callable=AsyncMock, return_value="Ответ")
+@patch("api.main.execute_tool", new_callable=AsyncMock, return_value={
+    "success": True, "data": [{"Сумма": 1}], "computed": None,
+})
+async def test_session_history(mock_onec, mock_formatter, mock_tool_caller, mock_router, client):
     """Two questions in same session are both saved in history."""
     from api.history import get_recent_messages
 
