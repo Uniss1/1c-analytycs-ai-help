@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     ollama_router_url: str = ""    # GPU 0, defaults to ollama_base_url
     ollama_query_url: str = ""     # GPU 1, defaults to ollama_base_url:+1
     ollama_formatter_url: str = "" # GPU 2, defaults to ollama_base_url:+2
-    model_name: str = "qwen3.5:4b"
+    model_name: str = "gemma4:e2b"
 
     # 1C HTTP service
     onec_base_url: str = "http://localhost/base/hs/ai"
