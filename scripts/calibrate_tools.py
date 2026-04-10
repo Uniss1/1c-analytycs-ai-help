@@ -144,6 +144,53 @@ TEST_CASES = [
         "time_series",
         {"metric": "EBITDA"},
     ),
+
+    # --- New tools ---
+
+    # Compare
+    (
+        "Сравни факт и план по выручке за март 2025",
+        "compare",
+        {"resource": "Сумма", "compare_by": "scenario", "values": ["Факт", "План"],
+         "metric": "Выручка", "year": 2025, "month": 3},
+    ),
+    (
+        "Факт vs бюджет EBITDA за январь 2025",
+        "compare",
+        {"compare_by": "scenario", "metric": "EBITDA", "year": 2025, "month": 1},
+    ),
+
+    # Ratio
+    (
+        "Рентабельность за март 2025",
+        "ratio",
+        {"numerator": "Маржа", "denominator": "Выручка", "year": 2025, "month": 3},
+    ),
+    (
+        "Маржа к выручке за январь 2025",
+        "ratio",
+        {"numerator": "Маржа", "denominator": "Выручка", "year": 2025, "month": 1},
+    ),
+
+    # Filtered
+    (
+        "ДЗО где выручка больше 100 млн за март 2025",
+        "filtered",
+        {"group_by": "company", "condition_operator": ">", "metric": "Выручка",
+         "year": 2025, "month": 3},
+    ),
+    (
+        "Показатели с суммой меньше 10 млн за январь 2025",
+        "filtered",
+        {"group_by": "metric", "condition_operator": "<", "year": 2025, "month": 1},
+    ),
+
+    # --- Negative / edge cases ---
+    (
+        "Какая выручка?",
+        "aggregate",
+        {"resource": "Сумма", "metric": "Выручка"},
+    ),
 ]
 
 
