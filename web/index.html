@@ -435,6 +435,12 @@
       user-select: none;
     }
     .badge-debug:hover { background: #ffe0b2; }
+    .badge-tool {
+      background: #e8eaf6;
+      color: #283593;
+      font-family: var(--font-mono);
+      font-weight: 600;
+    }
 
     /* ── Debug Panel ── */
     .debug-panel {
@@ -464,9 +470,8 @@
 
     .debug-step.step-router { border-left-color: #42a5f5; }
     .debug-step.step-metadata { border-left-color: #66bb6a; }
-    .debug-step.step-param_extractor, .debug-step.step-param_extractor_retry { border-left-color: #ffa726; }
-    .debug-step.step-query_builder { border-left-color: #ab47bc; }
-    .debug-step.step-validator { border-left-color: #78909c; }
+    .debug-step.step-tool_caller, .debug-step.step-tool_caller_retry { border-left-color: #ffa726; }
+    .debug-step.step-param_validation { border-left-color: #78909c; }
     .debug-step.step-1c_execute { border-left-color: #ef5350; }
     .debug-step.step-formatter { border-left-color: #26c6da; }
     .debug-step.step-cache { border-left-color: #8d6e63; }
@@ -863,15 +868,13 @@
         cache: 'Cache',
         router: 'Router (Intent)',
         metadata: 'Metadata (Register)',
-        param_extractor: 'Param Extractor (LLM → JSON)',
-        param_extractor_retry: 'Param Extractor (Retry)',
-        query_builder: 'Query Builder (JSON → 1C)',
-        validator: 'Validator',
+        tool_caller: 'Tool Caller (Gemma → Tool)',
+        tool_caller_retry: 'Tool Caller (Retry)',
+        param_validation: 'Param Validation',
         '1c_execute': '1C Execute',
         formatter: 'Formatter (LLM)',
         knowledge: 'Knowledge Base',
         clarification_response: 'Clarification',
-        user_confirmed: 'User Confirmation',
       };
 
       for (const step of debug.steps) {
@@ -922,70 +925,46 @@
             }
             break;
 
-          case 'param_extractor':
-          case 'param_extractor_retry':
-            body.innerHTML = `<span class="debug-key">needs_clarification:</span> <span class="debug-val">${step.needs_clarification}</span>`;
-            if (step.date_fallback_applied) body.innerHTML += ` <span class="debug-val" style="color:#ffa726">date_fallback applied</span>`;
-            if (step.input_message) {
-              body.innerHTML += `<br><span class="debug-key">input:</span> <span class="debug-val">${esc(step.input_message)}</span>`;
+          case 'tool_caller':
+          case 'tool_caller_retry':
+            if (step.tool) {
+              body.innerHTML = `<span class="debug-key">tool:</span> <span class="debug-val" style="font-weight:600;color:#283593">${esc(step.tool)}</span>`;
             }
-            if (step.metadata_sent) {
-              body.innerHTML += `<br><span class="debug-key">metadata →</span>`;
-              const m = document.createElement('code');
-              m.className = 'debug-query';
-              m.textContent = step.metadata_sent;
-              body.appendChild(m);
+            if (step.error) {
+              body.innerHTML += `<br><span class="debug-val error">${esc(step.error)}</span>`;
             }
-            if (step.raw_llm_response) {
-              body.innerHTML += `<span class="debug-key">LLM raw ответ →</span>`;
-              const r = document.createElement('code');
-              r.className = 'debug-query';
-              r.textContent = step.raw_llm_response;
-              body.appendChild(r);
-            }
-            if (step.params) {
-              body.innerHTML += `<span class="debug-key">Parsed params →</span>`;
-              const json = document.createElement('code');
-              json.className = 'debug-json';
-              json.textContent = JSON.stringify(step.params, null, 2);
-              body.appendChild(json);
+            if (step.args) {
+              body.innerHTML += `<br><span class="debug-key">args →</span>`;
+              const a = document.createElement('code');
+              a.className = 'debug-json';
+              a.textContent = JSON.stringify(step.args, null, 2);
+              body.appendChild(a);
             }
             break;
 
-          case 'query_builder':
-            if (step.query) {
-              body.innerHTML = `<span class="debug-key">query:</span>`;
-              const q = document.createElement('code');
-              q.className = 'debug-query';
-              q.textContent = step.query;
-              body.appendChild(q);
-              body.innerHTML += `<span class="debug-key">params:</span>`;
-              const p = document.createElement('code');
-              p.className = 'debug-json';
-              p.textContent = JSON.stringify(step.params, null, 2);
-              body.appendChild(p);
-            }
-            break;
-
-          case 'validator':
-            body.innerHTML = `<span class="debug-key">valid:</span> <span class="debug-val${step.valid ? '' : ' error'}">${step.valid}</span>`;
-            if (step.error) body.innerHTML += ` <span class="debug-val error">${esc(step.error)}</span>`;
-            if (step.sanitized_query) {
-              const q = document.createElement('code');
-              q.className = 'debug-query';
-              q.textContent = step.sanitized_query;
-              body.appendChild(q);
+          case 'param_validation':
+            if (step.errors && step.errors.length) {
+              body.innerHTML = `<span class="debug-val error">Ошибки: ${esc(step.errors.join('; '))}</span>`;
+            } else {
+              body.innerHTML = `<span class="debug-val">OK</span>`;
             }
             break;
 
           case '1c_execute':
             if (step.error) {
               body.innerHTML = `<span class="debug-val error">${esc(step.error)}</span>`;
+              if (step.error_type) body.innerHTML += ` <span class="debug-key">type:</span> <span class="debug-val">${esc(step.error_type)}</span>`;
             } else {
-              body.innerHTML = `<span class="debug-key">rows:</span> <span class="debug-val">${step.rows}</span>` +
-                ` <span class="debug-key">total:</span> <span class="debug-val">${step.total}</span>` +
-                ` <span class="debug-key">truncated:</span> <span class="debug-val">${step.truncated}</span>`;
+              body.innerHTML = `<span class="debug-key">rows:</span> <span class="debug-val">${step.rows}</span>`;
+              if (step.computed) {
+                body.innerHTML += `<br><span class="debug-key">computed:</span>`;
+                const c = document.createElement('code');
+                c.className = 'debug-json';
+                c.textContent = JSON.stringify(step.computed, null, 2);
+                body.appendChild(c);
+              }
               if (step.sample && step.sample.length) {
+                body.innerHTML += `<br><span class="debug-key">sample →</span>`;
                 const s = document.createElement('code');
                 s.className = 'debug-json';
                 s.textContent = JSON.stringify(step.sample, null, 2);
@@ -1069,6 +1048,12 @@
         if (data) {
           const meta = document.createElement('div');
           meta.className = 'msg-meta';
+          if (data.debug && data.debug.steps) {
+            const toolStep = data.debug.steps.find(s => s.step === 'tool_caller');
+            if (toolStep && toolStep.tool) {
+              meta.innerHTML += `<span class="badge badge-tool">${esc(toolStep.tool)}</span>`;
+            }
+          }
           if (data.intent === 'data') meta.innerHTML += '<span class="badge badge-data">Данные</span>';
           if (data.intent === 'knowledge') meta.innerHTML += '<span class="badge badge-knowledge">База знаний</span>';
           if (data.latency_ms) meta.innerHTML += `<span class="badge badge-latency">${data.latency_ms}ms</span>`;
@@ -1145,6 +1130,15 @@
       if (data && data.debug) {
         const meta = document.createElement('div');
         meta.className = 'msg-meta';
+        if (data.debug.steps) {
+          const toolStep = data.debug.steps.find(s => s.step === 'tool_caller');
+          if (toolStep && toolStep.tool) {
+            const toolBadge = document.createElement('span');
+            toolBadge.className = 'badge badge-tool';
+            toolBadge.textContent = toolStep.tool;
+            meta.insertBefore(toolBadge, meta.firstChild);
+          }
+        }
         if (data.latency_ms) meta.innerHTML += `<span class="badge badge-latency">${data.latency_ms}ms</span>`;
         const dbgBtn = document.createElement('span');
         dbgBtn.className = 'badge badge-debug';
