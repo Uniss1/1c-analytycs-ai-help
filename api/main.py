@@ -21,11 +21,10 @@ from .history import (
     save_message,
 )
 from .metadata import find_register, get_all_registers, init_metadata
-from .onec_client import execute_query
-from .param_extractor import extract_params
-from .query_builder import build_query
-from .query_validator import validate_params, validate_query
+from .onec_client import execute_query, execute_tool
+from .param_validator import validate as validate_tool_params
 from .router import classify_intent
+from .tool_caller import call_with_tools
 from .wiki_client import ask_knowledge_base
 
 # Configure logging for all api modules
@@ -189,7 +188,7 @@ async def _handle_data(
     session_id: str,
     debug: dict,
 ) -> dict:
-    """Data flow: metadata → extract params → clarify or execute."""
+    """Data flow: metadata → tool calling → validate → execute in 1C."""
     # Find register
     t0 = time.monotonic()
     register_meta, meta_debug = find_register(message, dashboard_context)
@@ -217,38 +216,123 @@ async def _handle_data(
         "ms": ms,
     })
 
-    # Extract structured params via LLM
+    # Tool calling via Gemma
     t0 = time.monotonic()
-    extraction = await extract_params(message, register_meta)
-    ext_debug = extraction.get("debug", {})
+    tool_result = await call_with_tools(message, register_meta)
     debug["steps"].append({
-        "step": "param_extractor",
-        "needs_clarification": extraction["needs_clarification"],
-        "params": extraction["params"],
-        "input_message": ext_debug.get("input_message"),
-        "metadata_sent": ext_debug.get("metadata_sent"),
-        "raw_llm_response": ext_debug.get("raw_llm_response"),
-        "date_fallback_applied": ext_debug.get("date_fallback_applied"),
+        "step": "tool_caller",
+        "tool": tool_result.get("tool"),
+        "args": tool_result.get("args"),
+        "error": tool_result.get("error"),
         "ms": int((time.monotonic() - t0) * 1000),
     })
 
-    if extraction["needs_clarification"]:
-        # Store pending state for this session
-        _pending_clarifications[session_id] = {
-            "params": extraction["params"],
-            "register_metadata": register_meta,
-        }
+    if not tool_result.get("tool"):
         return {
-            "answer": extraction["clarification_text"],
+            "answer": "Не удалось обработать вопрос. Попробуйте переформулировать.",
+            "register_name": register_name,
+        }
+
+    # Normalize result for 1C
+    params = tool_result.get("params", {})
+
+    # Check if clarification needed (missing required params)
+    if params.get("needs_clarification"):
+        _pending_clarifications[session_id] = {
+            "params": params,
+            "register_metadata": register_meta,
+            "tool": tool_result["tool"],
+        }
+        lines = ["Уточните, пожалуйста:"]
+        for dim in register_meta.get("dimensions", []):
+            name = dim["name"]
+            if not dim.get("required") or dim.get("default_value"):
+                continue
+            ft = dim.get("filter_type", "=")
+            if ft in ("year_month", "range") and not params.get("period", {}).get("year"):
+                lines.append(f"- {name}: укажите год и месяц")
+            elif ft == "=" and name not in params.get("filters", {}) and name not in params.get("group_by", []):
+                allowed = dim.get("allowed_values", [])
+                if allowed:
+                    lines.append(f"- {name}: выберите из {allowed}")
+                else:
+                    lines.append(f"- {name}: укажите значение")
+        return {
+            "answer": "\n".join(lines),
             "register_name": register_name,
             "needs_clarification": True,
         }
 
-    # Build and execute query
-    return await _execute_query_flow(
-        extraction["params"], register_meta, message, debug,
-        session_id=session_id,
-    )
+    # Validate params before sending to 1C
+    validation = validate_tool_params(tool_result, register_meta)
+    if not validation.ok:
+        debug["steps"].append({"step": "param_validation", "errors": validation.errors})
+        return {
+            "answer": "Некорректные параметры:\n" + "\n".join(f"- {e}" for e in validation.errors),
+            "register_name": register_name,
+            "needs_clarification": True,
+        }
+
+    # Execute in 1C via new JSON endpoint
+    t0 = time.monotonic()
+    try:
+        onec_result = await execute_tool(tool_result, register_name=register_name)
+    except Exception as e:
+        logger.error("1C execute_tool failed: %s", e)
+        debug["steps"].append({"step": "1c_execute", "error": str(e), "ms": int((time.monotonic() - t0) * 1000)})
+        return {
+            "answer": f"Ошибка выполнения запроса к 1С: {e}",
+            "register_name": register_name,
+        }
+
+    exec_ms = int((time.monotonic() - t0) * 1000)
+
+    if not onec_result.get("success"):
+        error_type = onec_result.get("error_type", "unknown")
+        error_msg = onec_result.get("error_message", "Неизвестная ошибка")
+        debug["steps"].append({"step": "1c_execute", "success": False, "error_type": error_type, "error": error_msg, "ms": exec_ms})
+
+        if error_type == "no_data":
+            return {"answer": "Данные за указанный период не найдены.", "register_name": register_name}
+
+        return {
+            "answer": f"Ошибка: {error_msg}",
+            "register_name": register_name,
+            "needs_clarification": error_type in ("invalid_params", "missing_params"),
+        }
+
+    data = onec_result.get("data", [])
+    computed = onec_result.get("computed")
+    debug["steps"].append({
+        "step": "1c_execute",
+        "success": True,
+        "rows": len(data),
+        "computed": computed,
+        "sample": data[:5],
+        "ms": exec_ms,
+    })
+
+    if not data and not computed:
+        return {"answer": "Данные за указанный период не найдены.", "register_name": register_name}
+
+    # Format response
+    t0 = time.monotonic()
+    format_data = data
+    if computed:
+        format_data = {"rows": data, "computed": computed}
+    answer, fmt_debug = await format_response(message, format_data, register_name)
+    debug["steps"].append({
+        "step": "formatter",
+        "raw_data_rows": len(data),
+        "raw_llm_response": fmt_debug.get("raw_llm_response"),
+        "ms": int((time.monotonic() - t0) * 1000),
+    })
+
+    return {
+        "answer": answer,
+        "register_name": register_name,
+        "query_text": onec_result.get("query_text"),
+    }
 
 
 async def _handle_clarification_response(
@@ -260,67 +344,85 @@ async def _handle_clarification_response(
 ) -> ChatResponse:
     """Handle user's response to a clarification question."""
     pending = _pending_clarifications.pop(session_id)
-    params = pending["params"]
     register_meta = pending["register_metadata"]
     register_name = register_meta["name"]
 
-    debug["steps"].append({"step": "clarification_response", "pending_params": params})
+    debug["steps"].append({"step": "clarification_response", "pending_tool": pending.get("tool")})
 
-    # Check if user confirms (да, ок, верно, подтверждаю, etc.)
-    msg_lower = message.strip().lower()
-    confirms = {"да", "ок", "верно", "подтверждаю", "правильно", "точно", "ага", "угу", "yes", "ok"}
+    # Re-run tool calling with combined context
+    original_desc = pending.get("params", {}).get("understood", {}).get("описание", "")
+    combined = f"{original_desc}. Уточнение: {message}" if original_desc else message
 
-    if msg_lower in confirms:
-        debug["steps"].append({"step": "user_confirmed", "confirmed": True})
-        result = await _execute_query_flow(params, register_meta, message, debug, session_id=session_id)
-    else:
-        debug["steps"].append({"step": "user_confirmed", "confirmed": False, "correction": message})
-        original_desc = ""
-        if params and params.get("understood", {}).get("описание"):
-            original_desc = params["understood"]["описание"]
+    t0 = time.monotonic()
+    tool_result = await call_with_tools(combined, register_meta)
+    debug["steps"].append({
+        "step": "tool_caller_retry",
+        "tool": tool_result.get("tool"),
+        "args": tool_result.get("args"),
+        "ms": int((time.monotonic() - t0) * 1000),
+    })
 
-        combined = f"Исходный вопрос: {original_desc}. Уточнение пользователя: {message}"
-        t0 = time.monotonic()
-        extraction = await extract_params(combined, register_meta)
-        ext_debug = extraction.get("debug", {})
-        debug["steps"].append({
-            "step": "param_extractor_retry",
-            "needs_clarification": extraction["needs_clarification"],
-            "params": extraction["params"],
-            "input_message": ext_debug.get("input_message"),
-            "raw_llm_response": ext_debug.get("raw_llm_response"),
-            "ms": int((time.monotonic() - t0) * 1000),
-        })
-
-        if extraction["needs_clarification"]:
-            _pending_clarifications[session_id] = {
-                "params": extraction["params"],
-                "register_metadata": register_meta,
-            }
-            latency = int((time.monotonic() - start) * 1000)
-            debug["total_ms"] = latency
-            save_message(session_id, "user", message)
-            save_message(session_id, "assistant", extraction["clarification_text"],
-                         intent="data", register=register_name, latency_ms=latency)
-            return ChatResponse(
-                answer=extraction["clarification_text"],
-                intent="data",
-                session_id=session_id,
-                latency_ms=latency,
-                register_name=register_name,
-                needs_clarification=True,
-                debug=debug,
-            )
-
-        result = await _execute_query_flow(
-            extraction["params"], register_meta, message, debug,
-            session_id=session_id,
+    if not tool_result.get("tool"):
+        latency = int((time.monotonic() - start) * 1000)
+        answer = "Не удалось обработать уточнение. Попробуйте задать вопрос заново."
+        save_message(session_id, "user", message)
+        save_message(session_id, "assistant", answer, intent="data", latency_ms=latency)
+        return ChatResponse(
+            answer=answer, intent="data", session_id=session_id,
+            latency_ms=latency, register_name=register_name, debug=debug,
         )
 
+    # Validate and execute
+    validation = validate_tool_params(tool_result, register_meta)
+    if not validation.ok:
+        latency = int((time.monotonic() - start) * 1000)
+        answer = "Некорректные параметры:\n" + "\n".join(f"- {e}" for e in validation.errors)
+        save_message(session_id, "user", message)
+        save_message(session_id, "assistant", answer, intent="data", latency_ms=latency)
+        return ChatResponse(
+            answer=answer, intent="data", session_id=session_id,
+            latency_ms=latency, register_name=register_name,
+            needs_clarification=True, debug=debug,
+        )
+
+    t0 = time.monotonic()
+    try:
+        onec_result = await execute_tool(tool_result, register_name=register_name)
+    except Exception as e:
+        logger.error("1C execute_tool failed on clarification: %s", e)
+        latency = int((time.monotonic() - start) * 1000)
+        answer = f"Ошибка выполнения запроса к 1С: {e}"
+        save_message(session_id, "user", message)
+        save_message(session_id, "assistant", answer, intent="data", latency_ms=latency)
+        return ChatResponse(
+            answer=answer, intent="data", session_id=session_id,
+            latency_ms=latency, register_name=register_name, debug=debug,
+        )
+
+    if not onec_result.get("success"):
+        latency = int((time.monotonic() - start) * 1000)
+        answer = onec_result.get("error_message", "Ошибка выполнения")
+        save_message(session_id, "user", message)
+        save_message(session_id, "assistant", answer, intent="data", latency_ms=latency)
+        return ChatResponse(
+            answer=answer, intent="data", session_id=session_id,
+            latency_ms=latency, register_name=register_name, debug=debug,
+        )
+
+    data = onec_result.get("data", [])
+    computed = onec_result.get("computed")
+
+    if not data and not computed:
+        answer = "Данные за указанный период не найдены."
+    else:
+        format_data = data
+        if computed:
+            format_data = {"rows": data, "computed": computed}
+        answer, _ = await format_response(message, format_data, register_name)
+
     latency = int((time.monotonic() - start) * 1000)
+    query_text = onec_result.get("query_text")
     debug["total_ms"] = latency
-    answer = result["answer"]
-    query_text = result.get("query_text")
 
     save_message(session_id, "user", message)
     save_message(session_id, "assistant", answer,
@@ -329,149 +431,9 @@ async def _handle_clarification_response(
     save_cache(message, answer, "data", dashboard_slug)
 
     return ChatResponse(
-        answer=answer,
-        intent="data",
-        session_id=session_id,
-        latency_ms=latency,
-        register_name=register_name,
-        debug=debug,
+        answer=answer, intent="data", session_id=session_id,
+        latency_ms=latency, register_name=register_name, debug=debug,
     )
-
-
-async def _execute_query_flow(
-    params: dict,
-    register_meta: dict,
-    message: str,
-    debug: dict,
-    session_id: str | None = None,
-) -> dict:
-    """Build query from params, execute in 1C, format response."""
-    register_name = register_meta["name"]
-
-    # Validate param values against allowed lists before building query
-    is_valid, val_errors = validate_params(params, register_meta)
-    if val_errors:
-        debug["steps"].append({"step": "param_validation", "errors": val_errors})
-        return {
-            "answer": "Некорректные значения:\n" + "\n".join(f"- {e}" for e in val_errors),
-            "register_name": register_name,
-            "needs_clarification": True,
-        }
-
-    # Build deterministic query
-    result = build_query(params, register_meta)
-    query_text = result["query"]
-    query_params = result["params"]
-    missing_required = result.get("missing_required", [])
-
-    debug["steps"].append({
-        "step": "query_builder",
-        "query": query_text,
-        "params": query_params,
-        "missing_required": missing_required,
-    })
-
-    if missing_required:
-        # Build helpful message with allowed values for each missing dimension
-        dims_by_name = {d["name"]: d for d in register_meta.get("dimensions", [])}
-        lines = ["Не хватает обязательных параметров:"]
-        for dim_name in missing_required:
-            dim = dims_by_name.get(dim_name, {})
-            allowed = dim.get("allowed_values") or []
-            filter_type = dim.get("filter_type", "=")
-            if allowed:
-                lines.append(f"- {dim_name}: выберите из {allowed}")
-            elif filter_type == "year_month":
-                lines.append(f"- {dim_name}: укажите год и месяц (например: март 2025)")
-            elif filter_type == "range":
-                lines.append(f"- {dim_name}: укажите начальную и/или конечную дату")
-            else:
-                lines.append(f"- {dim_name}: укажите значение")
-
-        # Store pending clarification so user can answer
-        if session_id:
-            _pending_clarifications[session_id] = {
-                "params": params,
-                "register_metadata": register_meta,
-            }
-
-        return {
-            "answer": "\n".join(lines),
-            "register_name": register_name,
-            "needs_clarification": True,
-        }
-
-    # Validate as safety net
-    allowed = {register_name}
-    is_valid, error, sanitized = validate_query(query_text, allowed)
-    if not is_valid:
-        debug["steps"].append({"step": "validator", "valid": False, "error": error})
-        return {
-            "answer": f"Ошибка построения запроса: {error}",
-            "register_name": register_name,
-            "query_text": query_text,
-        }
-    query_text = sanitized
-    debug["steps"].append({"step": "validator", "valid": True, "sanitized_query": sanitized})
-
-    # Execute in 1C
-    t0 = time.monotonic()
-    try:
-        onec_result = await execute_query(query_text, query_params)
-    except Exception as e:
-        logger.error("1C query failed: %s", e)
-        debug["steps"].append({"step": "1c_execute", "error": str(e), "ms": int((time.monotonic() - t0) * 1000)})
-        return {
-            "answer": f"Ошибка выполнения запроса к 1С: {e}",
-            "register_name": register_name,
-            "query_text": query_text,
-        }
-
-    exec_ms = int((time.monotonic() - t0) * 1000)
-
-    if not onec_result.get("success"):
-        error = onec_result.get("error", "Неизвестная ошибка")
-        debug["steps"].append({"step": "1c_execute", "success": False, "error": error, "ms": exec_ms})
-        return {
-            "answer": f"1С вернула ошибку: {error}",
-            "register_name": register_name,
-            "query_text": query_text,
-        }
-
-    data = onec_result.get("data", [])
-    debug["steps"].append({
-        "step": "1c_execute",
-        "success": True,
-        "rows": len(data),
-        "total": onec_result.get("total"),
-        "truncated": onec_result.get("truncated"),
-        "sample": data[:5],
-        "ms": exec_ms,
-    })
-
-    if not data:
-        return {
-            "answer": "Данные за указанный период не найдены.",
-            "register_name": register_name,
-            "query_text": query_text,
-        }
-
-    # Format response
-    t0 = time.monotonic()
-    answer, fmt_debug = await format_response(message, data, register_name)
-    debug["steps"].append({
-        "step": "formatter",
-        "raw_data_rows": len(data),
-        "input_data_sent": fmt_debug.get("input_data_sent"),
-        "raw_llm_response": fmt_debug.get("raw_llm_response"),
-        "ms": int((time.monotonic() - t0) * 1000),
-    })
-
-    return {
-        "answer": answer,
-        "register_name": register_name,
-        "query_text": query_text,
-    }
 
 
 async def _handle_knowledge(
