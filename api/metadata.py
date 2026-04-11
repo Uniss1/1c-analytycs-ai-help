@@ -54,7 +54,7 @@ def _enrich_register(row: sqlite3.Row) -> dict:
     conn = _get_conn()
     reg_id = row["id"]
     dims = conn.execute(
-        "SELECT name, data_type, description, required, default_value, filter_type, allowed_values "
+        "SELECT name, data_type, description, required, default_value, filter_type, allowed_values, technical, role, description_en "
         "FROM dimensions WHERE register_id = ?",
         (reg_id,),
     ).fetchall()
@@ -68,6 +68,7 @@ def _enrich_register(row: sqlite3.Row) -> dict:
         dim_dict = dict(d)
         # Convert required from int to bool
         dim_dict["required"] = bool(dim_dict.get("required"))
+        dim_dict["technical"] = bool(dim_dict.get("technical"))
         # Parse allowed_values from JSON string to list
         av = dim_dict.get("allowed_values")
         if av:

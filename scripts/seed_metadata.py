@@ -52,7 +52,10 @@ def create_schema(cur: sqlite3.Cursor) -> None:
             required       INTEGER NOT NULL DEFAULT 0,
             default_value  TEXT,
             filter_type    TEXT NOT NULL DEFAULT '=',
-            allowed_values TEXT
+            allowed_values TEXT,
+            technical      INTEGER NOT NULL DEFAULT 0,
+            role           TEXT NOT NULL DEFAULT 'filter',
+            description_en TEXT
         );
 
         CREATE TABLE IF NOT EXISTS resources (
@@ -108,7 +111,7 @@ def seed_from_yaml(cur: sqlite3.Cursor, data: dict) -> None:
             values = dim.get("values")
             allowed_values = json.dumps(values, ensure_ascii=False) if values else None
             cur.execute(
-                "INSERT INTO dimensions (register_id, name, data_type, description, required, default_value, filter_type, allowed_values) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO dimensions (register_id, name, data_type, description, required, default_value, filter_type, allowed_values, technical, role, description_en) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     reg_id,
                     dim["name"],
@@ -118,6 +121,9 @@ def seed_from_yaml(cur: sqlite3.Cursor, data: dict) -> None:
                     dim.get("default"),
                     dim.get("filter_type", "="),
                     allowed_values,
+                    1 if dim.get("technical") else 0,
+                    dim.get("role", "filter"),
+                    dim.get("description_en"),
                 ),
             )
 
