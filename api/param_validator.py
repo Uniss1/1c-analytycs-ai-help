@@ -6,8 +6,7 @@ without making a network call. 1C does its own deeper validation.
 
 from dataclasses import dataclass, field
 
-VALID_OPERATORS = {">", "<", ">=", "<=", "="}
-VALID_TOOLS = {"aggregate", "group_by", "top_n", "time_series", "compare", "ratio", "filtered"}
+VALID_TOOLS = {"aggregate", "group_by", "compare"}
 YEAR_MIN = 2020
 YEAR_MAX = 2030
 
@@ -76,12 +75,9 @@ def validate(tool_result: dict, register_metadata: dict) -> ValidationResult:
         if not isinstance(values, list) or len(values) != 2:
             errors.append("compare требует values — массив из ровно 2 элементов")
 
-    if tool == "filtered":
-        op = params.get("condition_operator")
-        if op and op not in VALID_OPERATORS:
-            errors.append(f"Неизвестный operator '{op}'. Допустимые: {sorted(VALID_OPERATORS)}")
-        val = params.get("condition_value")
-        if val is not None and not isinstance(val, (int, float)):
-            errors.append(f"condition_value должен быть числом, получено: {type(val).__name__}")
+    if tool == "group_by":
+        group_by = params.get("group_by", [])
+        if not group_by:
+            errors.append("group_by требует непустой параметр group_by")
 
     return ValidationResult(ok=len(errors) == 0, errors=errors)

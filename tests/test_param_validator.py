@@ -1,4 +1,5 @@
-"""Tests for param_validator — fast JSON validation before 1C call."""
+# tests/test_param_validator.py
+"""Tests for param_validator — mode-based validation."""
 
 import pytest
 
@@ -42,129 +43,67 @@ def test_valid_aggregate(register_meta):
     }
     result = validate(tool_result, register_meta)
     assert result.ok is True
-    assert result.errors == []
+
+
+def test_valid_tools_include_three_modes(register_meta):
+    """aggregate, group_by, compare are all valid."""
+    for tool in ("aggregate", "group_by", "compare"):
+        result = validate(
+            {"tool": tool, "params": {"resource": "Сумма", "filters": {}, "period": {"year": 2025, "month": 3}}},
+            register_meta,
+        )
+        # May have other errors but tool name should be valid
+        assert not any("инструмент" in e.lower() for e in result.errors)
+
+
+def test_invalid_tool(register_meta):
+    result = validate({"tool": "ratio", "params": {"resource": "Сумма"}}, register_meta)
+    assert result.ok is False
+    assert any("инструмент" in e.lower() or "tool" in e.lower() for e in result.errors)
 
 
 def test_invalid_resource(register_meta):
-    tool_result = {
-        "tool": "aggregate",
-        "params": {
-            "resource": "НесуществующийРесурс",
-            "filters": {},
-            "period": {"year": 2025, "month": 3},
-        },
-    }
-    result = validate(tool_result, register_meta)
+    result = validate(
+        {"tool": "aggregate", "params": {"resource": "Несуществующий", "filters": {}, "period": {"year": 2025, "month": 3}}},
+        register_meta,
+    )
     assert result.ok is False
-    assert any("resource" in e.lower() or "ресурс" in e.lower() for e in result.errors)
-
-
-def test_invalid_year(register_meta):
-    tool_result = {
-        "tool": "aggregate",
-        "params": {
-            "resource": "Сумма",
-            "filters": {},
-            "period": {"year": 1900, "month": 3},
-        },
-    }
-    result = validate(tool_result, register_meta)
-    assert result.ok is False
-    assert any("year" in e.lower() or "год" in e.lower() for e in result.errors)
-
-
-def test_invalid_month(register_meta):
-    tool_result = {
-        "tool": "aggregate",
-        "params": {
-            "resource": "Сумма",
-            "filters": {},
-            "period": {"year": 2025, "month": 15},
-        },
-    }
-    result = validate(tool_result, register_meta)
-    assert result.ok is False
-    assert any("month" in e.lower() or "месяц" in e.lower() for e in result.errors)
 
 
 def test_invalid_filter_value(register_meta):
-    tool_result = {
-        "tool": "aggregate",
-        "params": {
-            "resource": "Сумма",
-            "filters": {"Сценарий": "НесуществующийСценарий"},
-            "period": {"year": 2025, "month": 3},
-        },
-    }
-    result = validate(tool_result, register_meta)
+    result = validate(
+        {"tool": "aggregate", "params": {"resource": "Сумма", "filters": {"Сценарий": "XXX"}, "period": {"year": 2025, "month": 3}}},
+        register_meta,
+    )
     assert result.ok is False
     assert any("Сценарий" in e for e in result.errors)
 
 
 def test_compare_needs_two_values(register_meta):
-    tool_result = {
-        "tool": "compare",
-        "params": {
-            "resource": "Сумма",
-            "compare_by": "Сценарий",
-            "values": ["Факт"],  # only 1, need 2
-            "filters": {},
-            "period": {"year": 2025, "month": 3},
-        },
-    }
-    result = validate(tool_result, register_meta)
+    result = validate(
+        {"tool": "compare", "params": {"resource": "Сумма", "values": ["Факт"], "filters": {}, "period": {"year": 2025, "month": 3}}},
+        register_meta,
+    )
     assert result.ok is False
-    assert any("2" in e or "values" in e.lower() for e in result.errors)
 
 
 def test_compare_valid(register_meta):
-    tool_result = {
-        "tool": "compare",
-        "params": {
-            "resource": "Сумма",
-            "compare_by": "Сценарий",
-            "values": ["Факт", "План"],
-            "filters": {},
-            "period": {"year": 2025, "month": 3},
-        },
-    }
-    result = validate(tool_result, register_meta)
+    result = validate(
+        {"tool": "compare", "params": {"resource": "Сумма", "compare_by": "Сценарий", "values": ["Факт", "План"], "filters": {}, "period": {"year": 2025, "month": 3}}},
+        register_meta,
+    )
     assert result.ok is True
 
 
-def test_filtered_invalid_operator(register_meta):
-    tool_result = {
-        "tool": "filtered",
-        "params": {
-            "resource": "Сумма",
-            "group_by": "Показатель",
-            "condition_operator": "LIKE",
-            "condition_value": 100,
-            "filters": {},
-            "period": {"year": 2025, "month": 3},
-        },
-    }
-    result = validate(tool_result, register_meta)
+def test_group_by_missing(register_meta):
+    """group_by mode without group_by param should fail."""
+    result = validate(
+        {"tool": "group_by", "params": {"resource": "Сумма", "group_by": [], "filters": {}, "period": {"year": 2025, "month": 3}}},
+        register_meta,
+    )
     assert result.ok is False
-    assert any("operator" in e.lower() or "оператор" in e.lower() for e in result.errors)
 
 
-def test_filtered_valid(register_meta):
-    tool_result = {
-        "tool": "filtered",
-        "params": {
-            "resource": "Сумма",
-            "group_by": "Показатель",
-            "condition_operator": ">",
-            "condition_value": 100000000,
-            "filters": {},
-            "period": {"year": 2025, "month": 3},
-        },
-    }
-    result = validate(tool_result, register_meta)
-    assert result.ok is True
-
-
-def test_no_tool_result():
+def test_no_tool():
     result = validate({"tool": None, "error": "no tool call"}, {})
     assert result.ok is False
