@@ -13,8 +13,11 @@ def _filter_properties(register_metadata: dict) -> tuple[dict, list[str]]:
     """Build JSON Schema properties for filter dimensions.
 
     Returns (properties_dict, required_keys).
-    Dimension names are transliterated to Latin keys via _dim_key().
+    Skips dimensions marked as technical in metadata.
+    Falls back to hardcoded list if annotations are missing (backwards compat).
     """
+    _FALLBACK_TECHNICAL = {"Показатель_номер", "Ед_изм", "Масштаб", "Месяц", "ПризнакДоход"}
+
     props = {}
     required = []
 
@@ -26,29 +29,34 @@ def _filter_properties(register_metadata: dict) -> tuple[dict, list[str]]:
         if filter_type in ("year_month", "range"):
             continue
 
-        # Skip technical dimensions that users don't query by
-        if name in ("Показатель_номер", "Ед_изм", "Масштаб", "Месяц"):
+        # Skip technical dimensions
+        if "technical" in dim:
+            if dim["technical"]:
+                continue
+        elif name in _FALLBACK_TECHNICAL:
             continue
 
         key = _dim_key(name)
         allowed = dim.get("allowed_values", [])
         default = dim.get("default_value")
-        is_required = dim.get("required", False)
 
         prop: dict = {"type": "string"}
-        desc = f"Dimension '{name}'"
-        if dim.get("description"):
-            desc += f". {dim['description']}"
+
+        # Use description_en from metadata if available
+        if dim.get("description_en"):
+            desc = dim["description_en"]
+        else:
+            desc = f"Dimension '{name}'"
+            if dim.get("description"):
+                desc += f". {dim['description']}"
         if default:
             desc += f". Default: {default}"
+
         if allowed:
             prop["enum"] = [str(v) for v in allowed]
 
         prop["description"] = desc
         props[key] = prop
-
-        # Don't mark as JSON Schema required — let the model fill what it can.
-        # Actual required validation happens in _normalize_params / param_validator.
 
     return props, required
 
@@ -96,14 +104,32 @@ def _resource_enum(register_metadata: dict) -> list[str]:
 
 
 def _groupable_dimensions(register_metadata: dict) -> list[str]:
-    """Latin keys for dimensions that can be used for GROUP BY."""
-    skip_types = ("Дата",)
-    skip_names = ("Масштаб", "Ед_изм", "Показатель_номер", "Месяц", "ПризнакДоход")
-    return [
-        _dim_key(d["name"])
-        for d in register_metadata.get("dimensions", [])
-        if d["data_type"] not in skip_types and d["name"] not in skip_names
-    ]
+    """Latin keys for dimensions that can be used for GROUP BY.
+
+    Uses role annotation from metadata. Falls back to hardcoded skip list.
+    """
+    _FALLBACK_SKIP_NAMES = {"Масштаб", "Ед_изм", "Показатель_номер", "Месяц", "ПризнакДоход"}
+
+    result = []
+    for d in register_metadata.get("dimensions", []):
+        name = d["name"]
+
+        # Skip date dimensions
+        if d.get("data_type") == "Дата" or d.get("filter_type") in ("year_month", "range"):
+            continue
+
+        # Check annotations if available
+        if "role" in d:
+            if d.get("technical"):
+                continue
+            if d["role"] in ("group_by", "both"):
+                result.append(_dim_key(name))
+        else:
+            # Fallback: old hardcoded logic
+            if name not in _FALLBACK_SKIP_NAMES:
+                result.append(_dim_key(name))
+
+    return result
 
 
 def _has_required_period(register_metadata: dict) -> bool:
