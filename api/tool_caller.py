@@ -12,6 +12,7 @@ import re
 import httpx
 
 from .config import settings
+from .filter_utils import as_string_list
 from .tool_defs import build_system_message, build_tools, is_technical_dim, key_to_dim
 
 logger = logging.getLogger(__name__)
@@ -287,16 +288,6 @@ def _normalize_params(args: dict, register_metadata: dict) -> tuple[str, dict]:
         "limit", "compare_by", "compare_values",
     }
 
-    def _coerce_filter_value(value) -> list | None:
-        """Normalize a filter value to a list of strings, or None to drop it."""
-        if value is None:
-            return None
-        if isinstance(value, list):
-            cleaned = [str(v) for v in value if v is not None and str(v) != ""]
-            return cleaned or None
-        s = str(value)
-        return [s] if s else None
-
     filters: dict = {}
     for k, v in args.items():
         if k in skip_keys:
@@ -306,8 +297,8 @@ def _normalize_params(args: dict, register_metadata: dict) -> tuple[str, dict]:
             continue
         if dim_name == compare_by_cyrillic:
             continue
-        coerced = _coerce_filter_value(v)
-        if coerced is None:
+        coerced = [x for x in as_string_list(v) if x != ""]
+        if not coerced:
             continue
         filters[dim_name] = coerced
 

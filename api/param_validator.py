@@ -12,6 +12,8 @@ enum, it is rewritten in-place. Only genuine mismatches surface as errors.
 import unicodedata
 from dataclasses import dataclass, field
 
+from .filter_utils import as_string_list
+
 VALID_TOOLS = {"aggregate", "group_by", "compare"}
 YEAR_MIN = 2020
 YEAR_MAX = 2030
@@ -124,10 +126,10 @@ def validate(tool_result: dict, register_metadata: dict) -> ValidationResult:
             continue
         allowed = dim.get("allowed_values") or []
 
-        items = value if isinstance(value, list) else [value]
+        items = as_string_list(value)
         if not allowed:
             # Nothing to resolve, but still normalize shape to a list.
-            filters[dim_name] = [str(x) for x in items]
+            filters[dim_name] = items
             continue
 
         resolved: list[str] = []
