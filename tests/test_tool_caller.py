@@ -114,6 +114,28 @@ def test_normalize_returns_tool_from_mode():
     assert tool == "group_by"
 
 
+def test_technical_required_dim_does_not_trigger_clarification():
+    """Technical dimensions are hidden from the model, so they must not
+    trigger needs_clarification even when required and lacking default."""
+    meta = {
+        "name": "РегистрСведений.Витрина_Дашборда",
+        "dimensions": [
+            {"name": "Сценарий", "required": True, "default_value": "Факт", "filter_type": "="},
+            {"name": "Показатель", "required": True, "default_value": None, "filter_type": "="},
+            {"name": "Показатель_номер", "required": True, "default_value": None,
+             "filter_type": "=", "technical": True},
+            {"name": "Период_Показателя", "required": True, "filter_type": "year_month"},
+        ],
+        "resources": [{"name": "Сумма"}],
+    }
+    args = {
+        "mode": "aggregate", "resource": "Сумма",
+        "metric": "Выручка", "year": 2025, "month": 3,
+    }
+    _, params = _normalize_params(args, meta)
+    assert params["needs_clarification"] is False
+
+
 # --- Self-healing loop tests -------------------------------------------------
 
 OLLAMA_URL = "http://test-ollama:11434"

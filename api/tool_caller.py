@@ -320,6 +320,8 @@ def _normalize_params(args: dict, register_metadata: dict) -> tuple[str, dict]:
     needs_clarification = False
     for dim in register_metadata.get("dimensions", []):
         name = dim["name"]
+        if dim.get("technical"):
+            continue
         if not dim.get("required"):
             continue
         if dim.get("default_value"):
