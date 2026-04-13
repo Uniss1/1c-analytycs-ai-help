@@ -39,7 +39,8 @@ def _setup_dbs(tmp_path):
         CREATE TABLE dimensions (
             id INTEGER PRIMARY KEY, register_id INTEGER, name TEXT, data_type TEXT, description TEXT,
             required INTEGER NOT NULL DEFAULT 0, default_value TEXT,
-            filter_type TEXT NOT NULL DEFAULT '=', allowed_values TEXT
+            filter_type TEXT NOT NULL DEFAULT '=', allowed_values TEXT,
+            technical INTEGER NOT NULL DEFAULT 0, role TEXT, description_en TEXT
         );
         CREATE TABLE resources (
             id INTEGER PRIMARY KEY, register_id INTEGER, name TEXT, data_type TEXT, description TEXT
@@ -341,3 +342,98 @@ async def test_session_history(mock_onec, mock_formatter, mock_tool_caller, mock
     roles = [m["role"] for m in msgs]
     assert "user" in roles
     assert "assistant" in roles
+
+
+# --- Self-healing validation loop ----------------------------------------------
+
+def _tool_result(*, scenario: str, year: int = 2025, month: int = 3, tool: str = "aggregate") -> dict:
+    """Helper: build a tool_caller result with a given scenario filter value."""
+    return {
+        "tool": tool,
+        "args": {"mode": tool, "resource": "Сумма", "scenario": scenario, "year": year, "month": month},
+        "params": {
+            "resource": "Сумма",
+            "filters": {"Сценарий": scenario},
+            "period": {"year": year, "month": month},
+            "group_by": [],
+            "order_by": "desc",
+            "limit": 1000,
+            "needs_clarification": False,
+        },
+        "raw_response": {},
+    }
+
+
+@pytest.mark.asyncio
+@patch("api.router.generate", new_callable=AsyncMock, return_value="data")
+@patch("api.main.execute_tool", new_callable=AsyncMock, return_value={
+    "success": True, "data": [{"Сумма": 1}], "computed": None,
+})
+@patch("api.formatter.generate", new_callable=AsyncMock, return_value="Ответ")
+async def test_self_healing_recovers_after_invalid_filter(
+    mock_formatter, mock_onec, mock_router, client,
+):
+    """Validation fails on first call (invalid scenario), recovers on second."""
+    call_with_tools_mock = AsyncMock(side_effect=[
+        _tool_result(scenario="Газпром"),  # not in allowed_values → validation fails
+        _tool_result(scenario="Факт"),     # corrected by model on retry
+    ])
+
+    with patch("api.main.call_with_tools", call_with_tools_mock):
+        async with client:
+            resp = await client.post("/chat", json={"message": "выручка за март"})
+
+    body = resp.json()
+    assert resp.status_code == 200
+    assert not body["needs_clarification"], body
+    # tool_caller was called twice: initial + one healing retry
+    assert call_with_tools_mock.await_count == 2
+    # Second call must carry validation_feedback kwarg
+    second_call_kwargs = call_with_tools_mock.await_args_list[1].kwargs
+    assert "validation_feedback" in second_call_kwargs
+    assert "Газпром" in second_call_kwargs["validation_feedback"]
+
+
+@pytest.mark.asyncio
+@patch("api.router.generate", new_callable=AsyncMock, return_value="data")
+async def test_self_healing_exhausts_then_asks_clarification(mock_router, client):
+    """After MAX_VALIDATION_RETRIES all-invalid responses, surface clarification."""
+    from api.main import MAX_VALIDATION_RETRIES
+
+    # Every attempt returns an invalid scenario — model can't self-correct.
+    call_with_tools_mock = AsyncMock(side_effect=[
+        _tool_result(scenario="Газпром") for _ in range(MAX_VALIDATION_RETRIES)
+    ])
+
+    with patch("api.main.call_with_tools", call_with_tools_mock):
+        async with client:
+            resp = await client.post("/chat", json={"message": "выручка за март"})
+
+    body = resp.json()
+    assert body["needs_clarification"] is True
+    assert call_with_tools_mock.await_count == MAX_VALIDATION_RETRIES
+    assert "Некорректные параметры" in body["answer"]
+
+
+@pytest.mark.asyncio
+@patch("api.router.generate", new_callable=AsyncMock, return_value="data")
+@patch("api.main.execute_tool", new_callable=AsyncMock, return_value={
+    "success": True, "data": [{"Сумма": 1}], "computed": None,
+})
+@patch("api.formatter.generate", new_callable=AsyncMock, return_value="Ответ")
+async def test_self_healing_skips_retry_on_needs_clarification(
+    mock_formatter, mock_onec, mock_router, client,
+):
+    """needs_clarification=True is a user-data problem, not a validation one — no retry."""
+    result = _tool_result(scenario="Факт")
+    result["params"]["needs_clarification"] = True
+    call_with_tools_mock = AsyncMock(return_value=result)
+
+    with patch("api.main.call_with_tools", call_with_tools_mock):
+        async with client:
+            resp = await client.post("/chat", json={"message": "выручка"})
+
+    body = resp.json()
+    assert body["needs_clarification"] is True
+    # Called exactly once — we don't burn retries on missing user data
+    assert call_with_tools_mock.await_count == 1

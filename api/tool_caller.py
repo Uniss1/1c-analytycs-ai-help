@@ -16,9 +16,28 @@ from .tool_defs import build_system_message, build_tools, key_to_dim
 
 logger = logging.getLogger(__name__)
 
-MAX_RETRIES = 2
+MAX_RETRIES = 4
 
 VALID_TOOLS = {"query"}
+
+
+def _build_example_call(register_metadata: dict) -> str:
+    """Build a concrete example tool call from register schema for prompt reinforcement."""
+    resources = register_metadata.get("resources", [])
+    resource = resources[0]["name"] if resources else "Сумма"
+    example: dict = {"mode": "aggregate", "resource": resource, "year": 2026, "month": 3}
+    for dim in register_metadata.get("dimensions", []):
+        if dim.get("filter_type") in ("year_month", "range"):
+            continue
+        if dim.get("technical"):
+            continue
+        allowed = dim.get("allowed_values") or []
+        if not allowed:
+            continue
+        from .tool_defs import _dim_key
+        example[_dim_key(dim["name"])] = allowed[0]
+        break
+    return json.dumps(example, ensure_ascii=False)
 
 
 async def call_with_tools(
@@ -29,6 +48,7 @@ async def call_with_tools(
     temperature: float = 0.1,
     base_url: str | None = None,
     api_key: str | None = None,
+    validation_feedback: str | None = None,
 ) -> dict:
     """Call model via Ollama /api/chat with tools.
 
@@ -51,10 +71,22 @@ async def call_with_tools(
     system_msg = build_system_message(register_metadata)
     model_name = model or settings.model_name
 
-    messages = [
+    messages: list[dict] = [
         {"role": "system", "content": system_msg},
         {"role": "user", "content": question},
     ]
+    if validation_feedback:
+        messages.append({
+            "role": "user",
+            "content": (
+                "Your previous tool call failed validation:\n"
+                f"{validation_feedback}\n\n"
+                "Call the 'query' tool again with corrected parameters. "
+                "Use ONLY values from the enum lists in the tool schema."
+            ),
+        })
+
+    example_call = _build_example_call(register_metadata)
 
     async with httpx.AsyncClient(timeout=120) as client:
         for attempt in range(1, MAX_RETRIES + 1):
@@ -99,7 +131,11 @@ async def call_with_tools(
                 })
                 messages.append({
                     "role": "user",
-                    "content": "You MUST call one of the provided tools. Do NOT respond with text. Call a tool now.",
+                    "content": (
+                        f"Your previous response had no tool_calls. "
+                        f"Call the 'query' tool now with JSON arguments. "
+                        f"Example: query({example_call})"
+                    ),
                 })
                 continue
 
