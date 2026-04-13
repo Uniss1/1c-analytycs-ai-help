@@ -186,4 +186,3 @@ See `.claude/rules/` for domain-specific rules:
 - `1c-module.md` — 1C BSL code patterns and common errors
 
 @docs/1c-http-service-spec.md
-@docs/superpowers/specs/2026-04-10-smart-1c-backend-design.md

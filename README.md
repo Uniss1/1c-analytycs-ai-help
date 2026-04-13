@@ -1,25 +1,31 @@
 # 1C Analytics AI Help
 
-**AI-помощник для 1С Аналитики — отвечает на вопросы по данным и методологии на естественном языке.**
+**AI-помощник для 1С Аналитики — отвечает на вопросы по данным дашбордов на естественном языке.**
 
-Пользователь задаёт вопрос в чате (виджет внутри дашборда или standalone web-чат), система определяет тип вопроса, вызывает единый `query`-инструмент через SLM (Gemma 4 E2B / qwen3.5:4b) по Ollama `/api/chat`, отправляет JSON-параметры в 1С HTTP-сервис и возвращает отформатированный ответ по шаблону (без LLM).
+Пользователь задаёт вопрос в чате, SLM (Gemma 4 E2B / Qwen 3.5 4B через Ollama `/api/chat`) выбирает режим единого `query`-инструмента и заполняет JSON-параметры. Python нормализует и валидирует параметры, отправляет их в 1С HTTP-сервис, который сам собирает и выполняет запрос. Ответ форматируется по шаблону без LLM.
 
 ## Возможности
 
-- **Один `query`-tool с `mode`-enum** — модель выбирает режим через tool calling:
-  - `aggregate` — одно число за период ("Какая выручка за март?")
-  - `group_by` — разбивка по измерению, в т.ч. top-N ("Выручка по ДЗО")
-  - `compare` — сравнение двух значений одного измерения ("Факт vs план за март")
+- **Один `query`-tool с `mode`-enum** — модель выбирает режим:
+  - `aggregate` — одно число за период («Какая выручка за март 2025?»)
+  - `group_by` — разбивка по измерению, в т.ч. top-N («Выручка по ДЗО»)
+  - `compare` — два значения одного измерения side-by-side («Факт vs план»)
 
-  На стороне 1С эти три режима маппятся в 7 типов запросов (aggregate, group_by,
-  top_n, time_series, compare, ratio, filtered). Python передаёт только JSON.
+  На стороне 1С три режима маппятся в 7 типов запросов (`aggregate`, `group_by`,
+  `top_n`, `time_series`, `compare`, `ratio`, `filtered`). Текст 1С-запроса
+  никогда не пересекает сеть — только JSON-параметры.
+
+- **Массивы значений в фильтрах** — «выручка у ДЗО-1 и ДЗО-2» → `company: ["ДЗО-1","ДЗО-2"]`. Скаляр модели тоже принимается и оборачивается в одноэлементный массив.
+
+- **Опциональный `month`** — «выручка за 2024 год» (без указания месяца) даёт сумму за весь год.
+
 - **Self-healing loop** — при провале валидации параметров текст ошибки
-  возвращается модели, и она перевызывает tool до 3 раз перед тем как спросить
-  пользователя. Детали: [`docs/decisions/2026-04-12-self-healing.md`](docs/decisions/2026-04-12-self-healing.md).
-- **Вопросы по методологии** — поиск в базе знаний (Wiki.js + RAG)
-- **Контекст дашборда** — виджет автоматически передаёт контекст текущего дашборда
-- **Debug-панель** — в web UI видно какой инструмент вызвала модель, параметры, результат
-- **Безопасность** — текст запроса 1С нигде не передаётся по сети, только JSON-параметры
+  возвращается модели, она перевызывает tool до 3 раз перед тем как
+  переспросить пользователя. ADR: [`docs/decisions/2026-04-12-self-healing.md`](docs/decisions/2026-04-12-self-healing.md).
+
+- **Debug-панель** — в web UI видно какой режим выбрала модель, параметры, результат, retry-цикл.
+
+- **Безопасность** — текст 1С-запроса нигде не передаётся; параметры — single source of truth.
 
 ## Быстрый старт
 
@@ -30,7 +36,10 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 cp .env.example .env
-# Отредактировать .env — указать адреса Ollama, 1С, ai-chat
+# Отредактировать .env — указать OLLAMA_BASE_URL, MODEL_NAME, ONEC_*
+
+cp registers.example.yaml registers.yaml
+# Отредактировать registers.yaml под свой 1С-регистр
 
 python3 scripts/seed_metadata.py
 uvicorn api.main:app --reload --port 8000
@@ -40,25 +49,36 @@ curl http://localhost:8000/health
 
 Web-чат: `http://localhost:8000/web/`
 
+### Подключение нового регистра
+
+Чек-лист в [`CLAUDE.md`](CLAUDE.md#adding-a-new-register). Кратко:
+
+1. Имя регистра в `registers.yaml` — только идентификатор (`Витрина_Дашборда`),
+   **без** префикса `РегистрСведений.` / `РегистрНакопления.`.
+2. Для каждого нового измерения добавить Latin-маппинг в `_KEY_TO_DIM`
+   (`api/tool_defs.py`).
+3. Вручную проверить `technical: true/false` и `default:` для измерений (или
+   запустить интерактивный `python3 scripts/sync_metadata.py`).
+4. `python3 scripts/seed_metadata.py` → рестарт `uvicorn` → smoke в браузере.
+
 ## Тесты
 
 ```bash
 pytest tests/ -v
 ```
 
-Калибровка tool calling (требует Ollama с моделью, поддерживающей tool calling):
+Калибровка tool calling против реальной модели (требует Ollama):
 
 ```bash
-python3 scripts/calibrate_tools.py --model qwen3.5:4b --url http://<host>:11434
-# 18 кейсов: 12 базовых + 6 degraded (проверка self-healing loop)
+python3 scripts/calibrate_tools.py -v
+# Кейсы генерируются из метаданных регистра: aggregate/group_by/compare base +
+# year-only + multi-value + declensions + typos + degraded.
 ```
 
 ## Архитектура
 
 ```
 Пользователь → виджет / web-чат
-                    ↓
-              nginx (rate limit)
                     ↓
               FastAPI (:8000)
                     ↓
@@ -69,7 +89,7 @@ python3 scripts/calibrate_tools.py --model qwen3.5:4b --url http://<host>:11434
       Ollama /api/chat + single query tool
                     ↓
       param_validator.py ←─┐
-      быстрая проверка JSON │ self-healing loop
+      проверка JSON         │ self-healing loop
                     ↓       │ (до 3 ретраев с feedback)
       (ok) ─────────────────┘
                     ↓
@@ -79,11 +99,12 @@ python3 scripts/calibrate_tools.py --model qwen3.5:4b --url http://<host>:11434
       answer_formatter.py (шаблон, без LLM) → ответ
 ```
 
-LLM-роутер `data | knowledge` и интеграция с `ai-chat` (Wiki.js)
-временно отключены. `POST /knowledge` возвращает 503 как заглушка.
-План возврата: [`docs/superpowers/plans/2026-04-13-restore-knowledge-endpoint.md`](docs/superpowers/plans/2026-04-13-restore-knowledge-endpoint.md).
+LLM-роутер `data | knowledge` и интеграция с Wiki.js / `ai-chat` отключены —
+`/chat` идёт напрямую через tool calling. `POST /knowledge` возвращает 503-заглушку.
+План возврата (parked): [`docs/superpowers/plans/2026-04-13-restore-knowledge-endpoint.md`](docs/superpowers/plans/2026-04-13-restore-knowledge-endpoint.md).
 
-1С HTTP-сервис принимает JSON с инструментом и параметрами, сам собирает и выполняет запрос на языке 1С. Спецификация эндпоинта: [`docs/1c-http-service-spec.md`](docs/1c-http-service-spec.md).
+Контракт 1С HTTP-сервиса: [`docs/1c-http-service-spec.md`](docs/1c-http-service-spec.md).
+Эталонный BSL-код модуля: [`docs/1c-http-service-module.md`](docs/1c-http-service-module.md).
 
 ## Требования
 
@@ -91,7 +112,7 @@ LLM-роутер `data | knowledge` и интеграция с `ai-chat` (Wiki.j
 |-----------|--------|
 | Python | 3.11+ |
 | Ollama | 0.6+ |
-| Gemma 4 E2B | 5.1B Q4_K_M (tool calling) |
+| Модель | Gemma 4 E2B (5.1B) или Qwen 3.5 4B — обе с tool calling |
 | SQLite | 3.x (встроен в Python) |
 | 1С Аналитика | с HTTP-сервисом `/analytics_execute` |
 
@@ -100,10 +121,9 @@ LLM-роутер `data | knowledge` и интеграция с `ai-chat` (Wiki.j
 | Слой | Технологии |
 |------|-----------|
 | API | FastAPI, uvicorn, Pydantic Settings |
-| Tool calling | SLM (Gemma 4 E2B / qwen3.5:4b) через Ollama `/api/chat` |
-| Данные | SQLite (metadata + history), 1С HTTP-сервис |
+| Tool calling | SLM через Ollama native `/api/chat` (НЕ `/v1/chat/completions`) |
+| Данные | SQLite (`metadata.db`, `history.db`), 1С HTTP-сервис |
 | Фронтенд | Vanilla JS виджет + standalone web-чат |
-| Прокси | nginx (reverse proxy, script injection) |
 
 ## Структура проекта
 
@@ -111,24 +131,30 @@ LLM-роутер `data | knowledge` и интеграция с `ai-chat` (Wiki.j
 api/
 ├── main.py             # FastAPI entrypoint, chat flow + self-healing loop
 ├── config.py           # Pydantic Settings (.env)
-├── tool_defs.py        # Single query tool (JSON Schema, Latin keys)
+├── tool_defs.py        # Single query tool — JSON Schema, Latin keys, few-shot
 ├── tool_caller.py      # Ollama /api/chat + retry с validation feedback
-├── param_validator.py  # Валидация JSON-параметров до отправки в 1С
+├── param_validator.py  # Валидация JSON-параметров перед отправкой в 1С
+├── filter_utils.py     # as_string_list — нормализация значений фильтров
 ├── onec_client.py      # HTTP-клиент 1С (execute_tool + execute_query)
 ├── metadata.py         # Поиск регистра по ключевым словам
 ├── answer_formatter.py # Шаблонное форматирование ответа (без LLM)
 └── history.py          # История чата SQLite
+
 scripts/
-├── calibrate_tools.py  # Калибровка tool calling (12 базовых + 6 degraded)
 ├── seed_metadata.py    # Заполнение metadata.db из registers.yaml
-└── sync_metadata.py    # Синхронизация из 1С
-tests/                  # pytest (unit + e2e, respx-мокинг)
+├── sync_metadata.py    # Discovery измерений/значений из 1С + интервью
+├── calibrate_tools.py  # Калибровка tool calling против Ollama
+├── calibration_cases.py # Data-driven генератор кейсов из метаданных
+└── clear_history.py
+
+tests/                  # pytest (unit + e2e, respx-мокинг Ollama и 1С)
 web/                    # Standalone web-чат с debug-панелью
-widget/                 # Виджет для встраивания в 1С Аналитику
+widget/                 # JS-виджет для встраивания в 1С Аналитику
+
 docs/
-├── 1c-http-service-spec.md   # Контракт /analytics_execute
-├── 1c-http-service-module.md # BSL-код HTTP-сервиса
-├── decisions/                # ADR (self-healing и т.п.)
-├── specs/                    # Дизайн-доки
-└── superpowers/              # Планы и воркфлоу
+├── 1c-http-service-spec.md   # Контракт /analytics_execute и /query
+├── 1c-http-service-module.md # Эталонный BSL-код HTTP-сервиса
+├── decisions/                # ADR (self-healing loop)
+├── specs/                    # Top-level дизайн-доки
+└── superpowers/              # Specs и planы для текущих/parked задач
 ```
