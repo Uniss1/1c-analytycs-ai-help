@@ -19,8 +19,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from api.tool_caller import call_with_tools
 from api.tool_defs import build_tools
 from api.metadata import init_metadata, get_all_registers
+from api.param_validator import validate as validate_tool_params
 
 DB_PATH = str(Path(__file__).parent.parent / "metadata.db")
+
+# Self-healing loop (mirrors api.main.MAX_VALIDATION_RETRIES)
+MAX_VALIDATION_RETRIES = 3
 
 
 def load_test_register() -> dict:
@@ -110,6 +114,18 @@ TEST_CASES = [
     ),
 ]
 
+# --- Degraded cases: input that should trigger validation failure + auto-recovery ---
+# Here we don't assert specific args — only that the self-healing loop converges
+# within MAX_VALIDATION_RETRIES attempts (i.e. validation.ok at the end).
+DEGRADED_CASES: list[tuple[str, str]] = [
+    ("Выручка по Газпром за март 2025", "unknown company name → should retry with valid ДЗО or no-op company"),
+    ("Выручка за 1999 год", "year outside 2020-2030 → should retry with year in range"),
+    ("Какой CAPEX за март 2025", "CAPEX not in metric enum → should retry with valid metric"),
+    ("Выручка по сценарию 'Скорректированный факт' за март 2025", "invalid scenario → retry"),
+    ("Маржа по ДЗО Роснефть за март 2025", "unknown company 'Роснефть' → retry"),
+    ("Выручка за месяц 13 2025 года", "month=13 out of range → retry with valid month"),
+]
+
 
 def check_params(expected: dict, actual_args: dict) -> list[str]:
     """Check if expected params are present in actual tool call arguments."""
@@ -131,13 +147,49 @@ def check_params(expected: dict, actual_args: dict) -> list[str]:
     return errors
 
 
+async def _call_with_self_healing(
+    question: str, register: dict, *, model: str, base_url: str, api_key: str,
+) -> tuple[dict, int, list[list[str]]]:
+    """Mirror of api/main.py self-healing loop for calibration.
+
+    Returns (final_result, attempts, per_attempt_validation_errors).
+    """
+    feedback: str | None = None
+    errors_per_attempt: list[list[str]] = []
+    result: dict = {}
+    for attempt in range(1, MAX_VALIDATION_RETRIES + 1):
+        result = await call_with_tools(
+            question, register,
+            model=model, base_url=base_url, api_key=api_key,
+            validation_feedback=feedback,
+        )
+        if not result.get("tool"):
+            errors_per_attempt.append(["no tool call"])
+            return result, attempt, errors_per_attempt
+        params = result.get("params", {})
+        if params.get("needs_clarification"):
+            errors_per_attempt.append(["needs_clarification"])
+            return result, attempt, errors_per_attempt
+        validation = validate_tool_params(result, register)
+        if validation.ok:
+            errors_per_attempt.append([])
+            return result, attempt, errors_per_attempt
+        errors_per_attempt.append(list(validation.errors))
+        feedback = (
+            f"Previous tool args: {json.dumps(result.get('args', {}), ensure_ascii=False)}\n"
+            f"Validation errors:\n" + "\n".join(f"- {e}" for e in validation.errors)
+        )
+    return result, MAX_VALIDATION_RETRIES, errors_per_attempt
+
+
 async def run_calibration(model: str, base_url: str, api_key: str, verbose: bool = False):
     """Run all test cases and print results."""
     test_register = load_test_register()
 
+    total_cases = len(TEST_CASES) + len(DEGRADED_CASES)
     print(f"Model: {model}")
     print(f"API URL: {base_url}")
-    print(f"Test cases: {len(TEST_CASES)}")
+    print(f"Test cases: {len(TEST_CASES)} base + {len(DEGRADED_CASES)} degraded = {total_cases}")
     print()
 
     if verbose:
@@ -150,14 +202,18 @@ async def run_calibration(model: str, base_url: str, api_key: str, verbose: bool
     failed = 0
 
     for i, (question, expected_tool, expected_params) in enumerate(TEST_CASES, 1):
-        print(f"--- Test {i}/{len(TEST_CASES)} ---")
+        print(f"--- Test {i}/{len(TEST_CASES)} (base) ---")
         print(f"  Q: {question}")
         print(f"  Expected: {expected_tool}")
 
-        result = await call_with_tools(
+        result, attempts, err_log = await _call_with_self_healing(
             question, test_register,
             model=model, base_url=base_url, api_key=api_key,
         )
+        if attempts > 1:
+            print(f"  Self-healing attempts: {attempts}")
+            for a_idx, errs in enumerate(err_log[:-1], 1):
+                print(f"    attempt {a_idx} errors: {errs}")
 
         actual_tool = result.get("tool")
         actual_args = result.get("args", {})
@@ -204,11 +260,44 @@ async def run_calibration(model: str, base_url: str, api_key: str, verbose: bool
 
         print()
 
-    print(f"=== Results: {passed}/{passed + failed} passed ===")
-    if failed:
-        print(f"    {failed} failed")
+    # --- Degraded cases: only check self-healing converges ---
+    deg_passed = 0
+    deg_failed = 0
+    for j, (question, note) in enumerate(DEGRADED_CASES, 1):
+        print(f"--- Degraded {j}/{len(DEGRADED_CASES)} ---")
+        print(f"  Q: {question}")
+        print(f"  Note: {note}")
 
-    return failed == 0
+        result, attempts, err_log = await _call_with_self_healing(
+            question, test_register,
+            model=model, base_url=base_url, api_key=api_key,
+        )
+        for a_idx, errs in enumerate(err_log[:-1], 1):
+            print(f"    attempt {a_idx} errors: {errs}")
+        final_errs = err_log[-1] if err_log else ["unknown"]
+
+        actual_args = result.get("args", {})
+        print(f"  Final args: {json.dumps(actual_args, ensure_ascii=False)}")
+        print(f"  Attempts:   {attempts}")
+
+        params = result.get("params", {})
+        if final_errs == [] and not params.get("needs_clarification"):
+            print(f"  PASS (auto-recovered in {attempts} attempt(s))")
+            deg_passed += 1
+        else:
+            print(f"  FAIL (final errors: {final_errs})")
+            deg_failed += 1
+        print()
+
+    base_total = passed + failed
+    deg_total = deg_passed + deg_failed
+    grand_total = base_total + deg_total
+    grand_passed = passed + deg_passed
+    print(f"=== Base cases: {passed}/{base_total} passed ===")
+    print(f"=== Degraded cases: {deg_passed}/{deg_total} auto-recovered ===")
+    print(f"=== Overall: {grand_passed}/{grand_total} ===")
+
+    return failed == 0 and deg_failed == 0
 
 
 def main():

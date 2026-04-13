@@ -1,5 +1,6 @@
 """1C Analytics AI Help — FastAPI entrypoint."""
 
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -41,6 +42,10 @@ HISTORY_DB = str(DB_DIR / "history.db")
 
 # In-memory store for pending clarifications: session_id → {params, register_metadata}
 _pending_clarifications: dict[str, dict] = {}
+
+# Self-healing loop: how many times to re-invoke tool_caller on validation failure
+# before returning needs_clarification to the user.
+MAX_VALIDATION_RETRIES = 3
 
 
 @asynccontextmanager
@@ -216,25 +221,61 @@ async def _handle_data(
         "ms": ms,
     })
 
-    # Tool calling via Gemma
-    t0 = time.monotonic()
-    tool_result = await call_with_tools(message, register_meta)
-    debug["steps"].append({
-        "step": "tool_caller",
-        "tool": tool_result.get("tool"),
-        "args": tool_result.get("args"),
-        "error": tool_result.get("error"),
-        "ms": int((time.monotonic() - t0) * 1000),
-    })
+    # Tool calling via Gemma with self-healing validation loop.
+    # On each attempt: call tool → check needs_clarification → validate params.
+    # If validation fails, feed errors back to the model for a corrected call.
+    tool_result: dict = {}
+    params: dict = {}
+    validation = None
+    validation_feedback: str | None = None
 
-    if not tool_result.get("tool"):
-        return {
-            "answer": "Не удалось обработать вопрос. Попробуйте переформулировать.",
-            "register_name": register_name,
-        }
+    for val_attempt in range(1, MAX_VALIDATION_RETRIES + 1):
+        t0 = time.monotonic()
+        tool_result = await call_with_tools(
+            message, register_meta, validation_feedback=validation_feedback,
+        )
+        debug["steps"].append({
+            "step": "tool_caller",
+            "attempt": val_attempt,
+            "tool": tool_result.get("tool"),
+            "args": tool_result.get("args"),
+            "error": tool_result.get("error"),
+            "ms": int((time.monotonic() - t0) * 1000),
+        })
 
-    # Normalize result for 1C
-    params = tool_result.get("params", {})
+        if not tool_result.get("tool"):
+            return {
+                "answer": "Не удалось обработать вопрос. Попробуйте переформулировать.",
+                "register_name": register_name,
+            }
+
+        params = tool_result.get("params", {})
+
+        # Missing required params: the model genuinely doesn't have the info.
+        # Don't burn retries on this — go straight to clarification.
+        if params.get("needs_clarification"):
+            break
+
+        validation = validate_tool_params(tool_result, register_meta)
+        if validation.ok:
+            break
+
+        # Build deterministic, specific feedback so the model can correct itself.
+        prev_args = tool_result.get("args", {})
+        validation_feedback = (
+            f"Previous tool args: {json.dumps(prev_args, ensure_ascii=False)}\n"
+            f"Validation errors:\n" + "\n".join(f"- {e}" for e in validation.errors)
+        )
+        debug["steps"].append({
+            "step": "param_validation",
+            "attempt": val_attempt,
+            "errors": validation.errors,
+            "retrying": val_attempt < MAX_VALIDATION_RETRIES,
+        })
+        logger.info(
+            "Validation failed (attempt %d/%d): %s",
+            val_attempt, MAX_VALIDATION_RETRIES, validation.errors,
+        )
 
     # Check if clarification needed (missing required params)
     if params.get("needs_clarification"):
@@ -263,10 +304,8 @@ async def _handle_data(
             "needs_clarification": True,
         }
 
-    # Validate params before sending to 1C
-    validation = validate_tool_params(tool_result, register_meta)
-    if not validation.ok:
-        debug["steps"].append({"step": "param_validation", "errors": validation.errors})
+    # Validation still failing after retries — surface clarification to user.
+    if validation is not None and not validation.ok:
         return {
             "answer": "Некорректные параметры:\n" + "\n".join(f"- {e}" for e in validation.errors),
             "register_name": register_name,

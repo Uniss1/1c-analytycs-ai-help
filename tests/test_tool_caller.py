@@ -1,7 +1,18 @@
 # tests/test_tool_caller.py
 """Tests for tool_caller — normalization of single query tool params."""
 
-from api.tool_caller import _normalize_params
+import json
+
+import httpx
+import pytest
+import respx
+
+from api.tool_caller import (
+    MAX_RETRIES,
+    _build_example_call,
+    _normalize_params,
+    call_with_tools,
+)
 
 
 REGISTER_META = {
@@ -101,3 +112,111 @@ def test_normalize_returns_tool_from_mode():
     args = {"mode": "group_by", "resource": "Сумма", "group_by": "company", "year": 2025, "month": 3}
     tool, params = _normalize_params(args, REGISTER_META)
     assert tool == "group_by"
+
+
+# --- Self-healing loop tests -------------------------------------------------
+
+OLLAMA_URL = "http://test-ollama:11434"
+
+
+def _ok_response(tool_args: dict) -> httpx.Response:
+    """Build a successful Ollama /api/chat response with a tool call."""
+    return httpx.Response(200, json={
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"function": {"name": "query", "arguments": tool_args}}],
+        },
+    })
+
+
+def _text_response(content: str) -> httpx.Response:
+    """Response with plain text and no tool_calls (forces retry)."""
+    return httpx.Response(200, json={
+        "message": {"role": "assistant", "content": content},
+    })
+
+
+def test_build_example_call_uses_register_schema():
+    """Example includes the first resource and a valid enum value from metadata."""
+    example_json = _build_example_call(REGISTER_META)
+    example = json.loads(example_json)
+    assert example["mode"] == "aggregate"
+    assert example["resource"] == "Сумма"
+    # Sample should include a value from one of the enum dimensions
+    assert any(v in ("Факт", "Выручка") for v in example.values())
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_call_with_tools_injects_validation_feedback():
+    """validation_feedback gets appended as a user message before the API call."""
+    route = respx.post(f"{OLLAMA_URL}/api/chat").mock(
+        return_value=_ok_response({
+            "mode": "aggregate", "resource": "Сумма",
+            "metric": "Выручка", "year": 2025, "month": 3,
+        })
+    )
+
+    feedback = "ДЗО: 'Газпром' не из допустимых ['ДЗО-1','ДЗО-2']"
+    result = await call_with_tools(
+        "Выручка по Газпром за март 2025", REGISTER_META,
+        base_url=OLLAMA_URL, validation_feedback=feedback,
+    )
+
+    assert result["tool"] == "aggregate"
+    body = json.loads(route.calls[0].request.content)
+    user_msgs = [m["content"] for m in body["messages"] if m["role"] == "user"]
+    assert any("Газпром" in m and "Validation errors" not in m or "Газпром" in m for m in user_msgs)
+    # Feedback must appear in one of the user messages
+    assert any(feedback in m for m in user_msgs)
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_call_with_tools_retries_no_tool_call_with_example():
+    """On text-only response, retry prompt must contain the concrete example."""
+    responses = [
+        _text_response("Sorry, I'll just chat."),
+        _ok_response({
+            "mode": "aggregate", "resource": "Сумма",
+            "metric": "Выручка", "year": 2025, "month": 3,
+        }),
+    ]
+    route = respx.post(f"{OLLAMA_URL}/api/chat").mock(side_effect=responses)
+
+    result = await call_with_tools(
+        "Какая выручка за март 2025?", REGISTER_META, base_url=OLLAMA_URL,
+    )
+
+    assert result["tool"] == "aggregate"
+    assert route.call_count == 2
+    # Second request's last user message should contain the example call
+    second_body = json.loads(route.calls[1].request.content)
+    last_user = [m for m in second_body["messages"] if m["role"] == "user"][-1]["content"]
+    assert "query(" in last_user
+    assert "aggregate" in last_user
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_call_with_tools_exhausts_retries_on_persistent_text():
+    """If model never calls a tool, return error after MAX_RETRIES attempts."""
+    route = respx.post(f"{OLLAMA_URL}/api/chat").mock(
+        side_effect=[_text_response("nope") for _ in range(MAX_RETRIES)]
+    )
+
+    result = await call_with_tools(
+        "мусорный запрос", REGISTER_META, base_url=OLLAMA_URL,
+    )
+
+    assert result.get("tool") is None
+    assert route.call_count == MAX_RETRIES
+    assert "error" in result
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_call_with_tools_max_retries_is_four():
+    """Regression: MAX_RETRIES was bumped from 2 to 4 for self-healing headroom."""
+    assert MAX_RETRIES == 4
