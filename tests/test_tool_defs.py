@@ -224,3 +224,27 @@ def test_system_message_adapts_to_different_register():
     assert "Альфа" in msg and "Бета" in msg
     # Old hardcoded values should NOT leak in as examples
     assert "EBITDA" not in msg or "Q: " not in msg.split("EBITDA")[0][-50:]
+
+
+def test_system_message_has_array_filter_example(register_meta):
+    msg = build_system_message(register_meta)
+    # At least one example should pass a filter as an array literal
+    assert '["' in msg, "Expected array-literal filter in few-shot"
+
+
+def test_system_message_has_year_only_example(register_meta):
+    """A 'whole year' example must appear — year without month."""
+    msg = build_system_message(register_meta)
+    assert "за 2024 год" in msg or "за 2025 год" in msg
+    # The answer line following a year-only Q must have year= but not month=
+    lines = msg.splitlines()
+    year_only_q = next(
+        (i for i, l in enumerate(lines)
+         if "год" in l and l.lstrip().startswith("Q:")
+         and "март" not in l and "мая" not in l),
+        None,
+    )
+    assert year_only_q is not None, "No year-only Q: line found"
+    answer = lines[year_only_q + 1]
+    assert "year=" in answer
+    assert "month=" not in answer
