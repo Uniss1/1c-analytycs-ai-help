@@ -220,8 +220,111 @@ def build_tools(register_metadata: dict) -> list[dict]:
     return [tool_query]
 
 
+def _pick_example_dims(register_metadata: dict) -> dict:
+    """Pick concrete dimensions/values from metadata for few-shot examples.
+
+    Data-driven: reads actual allowed_values from the register so examples
+    never disagree with the enum constraint in tool schema.
+
+    Returns dict with keys: resource, metric_dim, metric_value, group_dim,
+    compare_dim, compare_values. Missing items are None if the register
+    lacks a suitable dimension.
+    """
+    result: dict = {
+        "resource": None,
+        "metric_dim": None,       # (name, key, value) for a filter-like dim
+        "metric_value": None,
+        "metric_key": None,
+        "group_dim": None,        # (name, key) for a groupable dim
+        "group_key": None,
+        "compare_dim": None,
+        "compare_key": None,
+        "compare_values": None,
+    }
+
+    resources = register_metadata.get("resources", [])
+    result["resource"] = resources[0]["name"] if resources else None
+
+    filter_candidate = None  # "the thing we're asking about"
+    group_candidate = None   # "the axis we're slicing along"
+    compare_candidate = None # dim with >=2 allowed values
+
+    for dim in register_metadata.get("dimensions", []):
+        if is_technical_dim(dim):
+            continue
+        if dim.get("filter_type") in ("year_month", "range"):
+            continue
+        allowed = dim.get("allowed_values") or []
+        if not allowed:
+            continue
+        role = dim.get("role")
+
+        # Filter candidate: prefer role=filter, else role=both, else any
+        if filter_candidate is None:
+            filter_candidate = dim
+        elif role == "filter" and filter_candidate.get("role") != "filter":
+            filter_candidate = dim
+
+        # Group candidate: prefer role=group_by/both, skip role=filter-only
+        if role in ("group_by", "both") or role is None:
+            if group_candidate is None:
+                group_candidate = dim
+
+        # Compare candidate: needs >=2 allowed values
+        if len(allowed) >= 2 and (role in ("group_by", "both") or role is None):
+            if compare_candidate is None:
+                compare_candidate = dim
+
+    # Ensure filter_dim and group_dim are different if possible
+    if filter_candidate and group_candidate and filter_candidate is group_candidate:
+        for dim in register_metadata.get("dimensions", []):
+            if dim is filter_candidate or is_technical_dim(dim):
+                continue
+            if dim.get("filter_type") in ("year_month", "range"):
+                continue
+            if not (dim.get("allowed_values") or []):
+                continue
+            role = dim.get("role")
+            if role in ("group_by", "both") or role is None:
+                group_candidate = dim
+                break
+
+    if filter_candidate:
+        name = filter_candidate["name"]
+        result["metric_dim"] = name
+        result["metric_key"] = _dim_key(name)
+        result["metric_value"] = filter_candidate["allowed_values"][0]
+    if group_candidate:
+        name = group_candidate["name"]
+        result["group_dim"] = name
+        result["group_key"] = _dim_key(name)
+    if compare_candidate:
+        name = compare_candidate["name"]
+        result["compare_dim"] = name
+        result["compare_key"] = _dim_key(name)
+        result["compare_values"] = list(compare_candidate["allowed_values"][:2])
+
+    return result
+
+
+def _format_kwargs(pairs: list[tuple[str, object]]) -> str:
+    """Render list of (key, value) as Python-like kwargs for few-shot."""
+    out = []
+    for k, v in pairs:
+        if v is None:
+            continue
+        if isinstance(v, list):
+            rendered = "[" + ", ".join(f'"{x}"' for x in v) + "]"
+        elif isinstance(v, str):
+            rendered = f'"{v}"'
+        else:
+            rendered = str(v)
+        out.append(f"{k}={rendered}")
+    return ", ".join(out)
+
+
 def build_system_message(register_metadata: dict) -> str:
-    """Build system message with few-shot examples for the query tool."""
+    """Build system message with data-driven few-shot examples for the query tool."""
     name = register_metadata.get("name", "")
     desc = register_metadata.get("description", "")
 
@@ -264,27 +367,63 @@ def build_system_message(register_metadata: dict) -> str:
     lines.append("- group_by: breakdown by a dimension (also for top-N)")
     lines.append("- compare: compare two values of one dimension side by side")
 
+    # Data-driven few-shot: use actual values from register metadata so the
+    # model never sees examples that contradict the enum constraint.
+    ex = _pick_example_dims(register_metadata)
+    res = ex["resource"] or (resources[0] if resources else "Сумма")
+    metric_value = ex["metric_value"]
+    metric_key = ex["metric_key"]
+    group_key = ex["group_key"]
+    compare_key = ex["compare_key"]
+    compare_values = ex["compare_values"]
+
     lines.append("")
-    lines.append("EXAMPLES:")
-    lines.append('Q: "Какая выручка за март 2025?"')
-    lines.append('A: query(mode="aggregate", resource="Сумма", metric="Выручка", year=2025, month=3)')
-    lines.append("")
-    lines.append('Q: "Выручка по ДЗО за март 2025"')
-    lines.append('A: query(mode="group_by", resource="Сумма", metric="Выручка", group_by="company", year=2025, month=3)')
-    lines.append("")
-    lines.append('Q: "Топ-5 ДЗО по выручке за март 2025"')
-    lines.append('A: query(mode="group_by", resource="Сумма", metric="Выручка", group_by="company", year=2025, month=3)')
-    lines.append("")
-    lines.append('Q: "Сравни факт и план по выручке за март 2025"')
-    lines.append('A: query(mode="compare", resource="Сумма", metric="Выручка", compare_by="scenario", compare_values=["Факт", "План"], year=2025, month=3)')
-    lines.append("")
-    lines.append('Q: "EBITDA за январь 2025"')
-    lines.append('A: query(mode="aggregate", resource="Сумма", metric="EBITDA", year=2025, month=1)')
+    lines.append("EXAMPLES (values taken from this register's enums — copy them exactly):")
+
+    # aggregate
+    agg_kwargs: list[tuple[str, object]] = [("mode", "aggregate"), ("resource", res)]
+    if metric_key and metric_value:
+        agg_kwargs.append((metric_key, metric_value))
+    agg_kwargs += [("year", 2025), ("month", 3)]
+    topic = metric_value or res
+    lines.append(f'Q: "Какой показатель {topic} за март 2025?"')
+    lines.append(f'A: query({_format_kwargs(agg_kwargs)})')
+
+    # group_by
+    if group_key:
+        gb_kwargs: list[tuple[str, object]] = [("mode", "group_by"), ("resource", res)]
+        if metric_key and metric_value and metric_key != group_key:
+            gb_kwargs.append((metric_key, metric_value))
+        gb_kwargs += [("group_by", group_key), ("year", 2025), ("month", 3)]
+        lines.append("")
+        lines.append(f'Q: "{topic} по {ex["group_dim"]} за март 2025"')
+        lines.append(f'A: query({_format_kwargs(gb_kwargs)})')
+
+        lines.append("")
+        lines.append(f'Q: "Топ-5 {ex["group_dim"]} по {topic} за март 2025"')
+        lines.append(f'A: query({_format_kwargs(gb_kwargs)})')
+
+    # compare
+    if compare_key and compare_values and len(compare_values) == 2:
+        cmp_kwargs: list[tuple[str, object]] = [("mode", "compare"), ("resource", res)]
+        if metric_key and metric_value and metric_key != compare_key:
+            cmp_kwargs.append((metric_key, metric_value))
+        cmp_kwargs += [
+            ("compare_by", compare_key),
+            ("compare_values", compare_values),
+            ("year", 2025), ("month", 3),
+        ]
+        lines.append("")
+        lines.append(
+            f'Q: "Сравни {compare_values[0]} и {compare_values[1]} '
+            f'по {topic} за март 2025"'
+        )
+        lines.append(f'A: query({_format_kwargs(cmp_kwargs)})')
 
     lines.append("")
     lines.append("RULES:")
     lines.append("1. ALWAYS call the query tool. NEVER respond with plain text.")
-    lines.append("2. Pick values STRICTLY from the allowed enums.")
+    lines.append("2. Copy enum values EXACTLY from the lists above — do NOT translate, lowercase, or paraphrase.")
     lines.append("3. If a filter value is not mentioned, use its default (Python applies defaults automatically).")
     lines.append("4. Extract year and month from Russian text: 'март 2025' -> year=2025, month=3.")
     lines.append("5. For top-N questions use group_by mode (Python handles limit).")

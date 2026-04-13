@@ -107,3 +107,99 @@ def test_group_by_missing(register_meta):
 def test_no_tool():
     result = validate({"tool": None, "error": "no tool call"}, {})
     assert result.ok is False
+
+
+def test_fuzzy_resolves_case_difference(register_meta):
+    """Model writes 'выручка' (lowercase), register has 'Выручка' → auto-healed."""
+    tool_result = {
+        "tool": "aggregate",
+        "params": {
+            "resource": "Сумма",
+            "filters": {"Показатель": "выручка"},
+            "period": {"year": 2025, "month": 3},
+        },
+    }
+    result = validate(tool_result, register_meta)
+    assert result.ok is True
+    assert tool_result["params"]["filters"]["Показатель"] == "Выручка"
+
+
+def test_fuzzy_resolves_unique_substring(register_meta):
+    """'EBITDA' with trailing whitespace or punctuation resolves to canonical."""
+    tool_result = {
+        "tool": "aggregate",
+        "params": {
+            "resource": "сумма",  # lower-case resource
+            "filters": {"Показатель": "ebitda."},
+            "period": {"year": 2025, "month": 3},
+        },
+    }
+    result = validate(tool_result, register_meta)
+    assert result.ok is True
+    assert tool_result["params"]["resource"] == "Сумма"
+    assert tool_result["params"]["filters"]["Показатель"] == "EBITDA"
+
+
+def test_fuzzy_ambiguous_substring_reports_candidates():
+    """When value matches multiple enum entries, error lists candidates."""
+    meta = {
+        "name": "Test",
+        "resources": [{"name": "Сумма"}],
+        "dimensions": [
+            {
+                "name": "Показатель",
+                "required": True,
+                "filter_type": "=",
+                "allowed_values": ["Выручка от реализации", "Выручка прочая"],
+            },
+        ],
+    }
+    tool_result = {
+        "tool": "aggregate",
+        "params": {
+            "resource": "Сумма",
+            "filters": {"Показатель": "выручка"},
+            "period": {"year": 2025, "month": 3},
+        },
+    }
+    result = validate(tool_result, meta)
+    assert result.ok is False
+    err = next(e for e in result.errors if "Показатель" in e)
+    assert "Выручка от реализации" in err
+    assert "Выручка прочая" in err
+
+
+def test_error_uses_imperative_copy_wording(register_meta):
+    """Error messages tell the SLM to copy exact enum strings."""
+    result = validate(
+        {
+            "tool": "aggregate",
+            "params": {
+                "resource": "Сумма",
+                "filters": {"Сценарий": "XXX"},
+                "period": {"year": 2025, "month": 3},
+            },
+        },
+        register_meta,
+    )
+    assert result.ok is False
+    err = next(e for e in result.errors if "Сценарий" in e)
+    assert "EXACTLY" in err
+    assert "XXX" in err
+
+
+def test_compare_values_fuzzy_resolved(register_meta):
+    """compare values get normalized against compare_by's allowed."""
+    tool_result = {
+        "tool": "compare",
+        "params": {
+            "resource": "Сумма",
+            "compare_by": "Сценарий",
+            "values": ["факт", "план"],
+            "filters": {},
+            "period": {"year": 2025, "month": 3},
+        },
+    }
+    result = validate(tool_result, register_meta)
+    assert result.ok is True
+    assert tool_result["params"]["values"] == ["Факт", "План"]

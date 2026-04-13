@@ -79,10 +79,10 @@ async def call_with_tools(
         messages.append({
             "role": "user",
             "content": (
-                "Your previous tool call failed validation:\n"
                 f"{validation_feedback}\n\n"
-                "Call the 'query' tool again with corrected parameters. "
-                "Use ONLY values from the enum lists in the tool schema."
+                "Re-emit the 'query' tool call with corrected parameters. "
+                "Copy enum values EXACTLY as spelled in the tool schema — "
+                "do NOT translate, lowercase, or paraphrase."
             ),
         })
 

@@ -251,10 +251,15 @@ async def _handle_data(
             break
 
         # Build deterministic, specific feedback so the model can correct itself.
+        # Keep imperative wording so the SLM copies exact strings from enum lists
+        # instead of paraphrasing.
         prev_args = tool_result.get("args", {})
         validation_feedback = (
-            f"Previous tool args: {json.dumps(prev_args, ensure_ascii=False)}\n"
-            f"Validation errors:\n" + "\n".join(f"- {e}" for e in validation.errors)
+            "Your previous tool call had invalid enum values. "
+            "FIX by copying exact strings from the enum lists in the tool schema. "
+            "Do NOT translate, lowercase, or paraphrase.\n"
+            f"Previous args: {json.dumps(prev_args, ensure_ascii=False)}\n"
+            f"Errors:\n" + "\n".join(f"- {e}" for e in validation.errors)
         )
         debug["steps"].append({
             "step": "param_validation",

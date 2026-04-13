@@ -152,3 +152,44 @@ def test_system_message_has_few_shot(register_meta):
     assert "compare" in msg
     assert "ALWAYS call" in msg
     assert "Витрина_Дашборда" in msg
+
+
+def test_system_message_examples_use_register_enum_values(register_meta):
+    """Few-shot examples must pull values from the register's allowed_values,
+    not from a hardcoded set that might not exist in the actual register."""
+    msg = build_system_message(register_meta)
+    # Values from this register's enums should appear in examples
+    assert "Выручка" in msg  # metric's first allowed
+    # compare_values should use first two scenario values
+    assert '"Факт"' in msg and '"Прогноз"' in msg
+
+
+def test_system_message_adapts_to_different_register():
+    """Swapping register with different enum values changes the examples."""
+    meta = {
+        "name": "РегистрСведений.АнотерРегистр",
+        "dimensions": [
+            {
+                "name": "Показатель",
+                "filter_type": "=",
+                "role": "filter",
+                "allowed_values": ["Выручка от реализации", "Прочее"],
+                "required": True,
+            },
+            {
+                "name": "ДЗО",
+                "filter_type": "=",
+                "role": "both",
+                "allowed_values": ["Альфа", "Бета"],
+                "required": True,
+            },
+        ],
+        "resources": [{"name": "Сумма_нетто"}],
+    }
+    msg = build_system_message(meta)
+    # Example values must be from THIS register, not defaults
+    assert "Выручка от реализации" in msg
+    assert "Сумма_нетто" in msg
+    assert "Альфа" in msg and "Бета" in msg
+    # Old hardcoded values should NOT leak in as examples
+    assert "EBITDA" not in msg or "Q: " not in msg.split("EBITDA")[0][-50:]
