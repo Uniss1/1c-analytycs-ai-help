@@ -2,8 +2,37 @@
 
 import json
 import sqlite3
+from pathlib import Path
+
 import pytest
+import yaml
+
 from scripts.seed_metadata import create_schema, seed_from_yaml
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+EXAMPLE_YAML = REPO_ROOT / "registers.example.yaml"
+
+_TYPE_PREFIXES = (
+    "РегистрСведений.",
+    "РегистрНакопления.",
+    "РегистрБухгалтерии.",
+    "РегистрРасчёта.",
+    "РегистрРасчета.",
+)
+
+
+def test_example_yaml_register_names_have_no_type_prefix():
+    """1С expects bare register identifiers in the payload — type comes from
+    the `type` field, not the `name`. Prefix in `name` breaks routing in BSL.
+    Pin this in the example template so future edits don't regress it."""
+    data = yaml.safe_load(EXAMPLE_YAML.read_text(encoding="utf-8"))
+    for reg in data.get("registers", []):
+        name = reg.get("name", "")
+        for prefix in _TYPE_PREFIXES:
+            assert not name.startswith(prefix), (
+                f"registers.example.yaml: register {name!r} must be a bare "
+                f"identifier (drop the {prefix!r} prefix); type lives in `type`."
+            )
 
 
 @pytest.fixture()
