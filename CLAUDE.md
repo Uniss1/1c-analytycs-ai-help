@@ -122,6 +122,33 @@ One module in Конфигуратор → HTTP-сервисы → `АИАнал
 - **Metadata enrichment**: `sync_metadata.py` has interactive interview mode. Run it to annotate new fields with `technical`/`role`/`description_en`. `tool_defs.py` reads annotations from metadata (falls back to hardcoded list for unannotated registers).
 - **Ollama port**: production server uses `10.10.90.188:11443`, not default 11434.
 
+## Lessons learned
+
+Уроки 4 дней постройки. Каждое правило — императив + 1 строка «почему».
+
+**SLM tool calling (5B-класс моделей):**
+- Один tool с `mode` enum > 7 разных tools — модель путается в выборе имени функции
+- Латинские ключи в JSON Schema > кириллические — кириллица в schema ломает small models
+- Enum-значения и дефолты дублируем и в schema, и в system message — двойное подкрепление
+- Перед бенчмарком: `cat .env | grep MODEL_NAME` — не доверять докам, .env может расходиться
+- Ollama native `/api/chat`, не OpenAI-compat `/v1/chat/completions` — для Gemma тулы ломаются
+
+**Архитектурные:**
+- Текст 1С-запроса не пересекает сеть. Только JSON params (безопасность + корректность синтаксиса бесплатно)
+- Правило, живущее в двух местах → выноси helper. Technical-dim фикс ловили дважды
+- Не ставить LLM туда, где работает шаблон. Каждый LLM-вызов = +1–3 сек латентности
+- Чинить root cause, не симптом: `invalid_params` на корректный resource = баг валидатора, не клиента
+
+**1С платформа (часто граблями):**
+- URL-шаблоны HTTP-сервиса односегментные: `/analytics_execute`, не `/analytics/execute`
+- РегистрСведений имеет три коллекции: `Измерения`, `Ресурсы`, `Реквизиты` — проверять обе при поиске поля
+- Оператор сравнения подставлять через switch/case, не конкатенацией строки (защита от инъекций)
+
+**Process для этой кодобазы:**
+- После любого фикса в data flow — рестарт `uvicorn` + реальный вопрос в вебе. CI-зелёный ≠ работает в браузере
+- Коррекция от пользователя → обновить ВСЕ источники истины сразу: код + spec + README + memory entry. Иначе та же ошибка вернётся
+- Untracked `.md` план без коммита = долг. Либо коммитим, либо удаляем
+
 ## Modular Docs
 
 See `.claude/rules/` for domain-specific rules:
