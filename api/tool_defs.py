@@ -66,7 +66,7 @@ def _filter_properties(register_metadata: dict) -> tuple[dict, list[str]]:
             desc = f"Dimension '{name}'"
             if dim.get("description"):
                 desc += f". {dim['description']}"
-        desc += ". Always pass as array, even for one value."
+        desc = desc.rstrip(".") + ". Always pass as array, even for one value."
         if default:
             desc += f" Default: {default}."
 

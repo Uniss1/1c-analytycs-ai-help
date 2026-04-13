@@ -188,7 +188,6 @@ def test_filter_dim_without_allowed_values_is_array_without_enum():
         ],
         "resources": [{"name": "Сумма"}],
     }
-    from api.tool_defs import build_tools
     tools = build_tools(meta)
     props = tools[0]["function"]["parameters"]["properties"]
     assert props["metric"]["type"] == "array"
